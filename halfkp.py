@@ -5,6 +5,15 @@ NUM_SQ = 64
 NUM_PT = 10
 NUM_PLANES = (NUM_SQ * NUM_PT + 1)
 INPUTS = NUM_PLANES * NUM_SQ # 41024
+
+# Factors are used by the trainer to share weights between common elements of
+# the features.
+FACTORS = {
+  'kings': 64,
+  'pieces': 641,
+  'relative_halfkp': 2250,
+}
+FACTORIZED_INPUTS = INPUTS + sum(FACTORS.values())
 NAME = 'HalfKP'
 
 def orient(is_white_pov: bool, sq: int):
