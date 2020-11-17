@@ -51,7 +51,7 @@ struct HalfKP {
         return 1 + static_cast<int>(orient(color, sq)) + p_idx * NUM_SQ + static_cast<int>(ksq) * NUM_PLANES;
     }
 
-    static void fill_features_sparse(int i, const TrainingDataEntry& e, int* features, int& counter, Color color)
+    static void fill_features_sparse(int i, const TrainingDataEntry& e, int64_t* features, int stride, int& counter, Color color)
     {
         auto& pos = e.pos;
         auto pieces = pos.piecesBB() & ~(pos.piecesBB(Piece(PieceType::King, Color::White)) | pos.piecesBB(Piece(PieceType::King, Color::Black)));
@@ -59,10 +59,9 @@ struct HalfKP {
         for(Square sq : pieces)
         {
             auto p = pos.pieceAt(sq);
-            int idx = counter * 2;
+            features[counter] = i;
+            features[stride + counter] = feature_index(color, orient(color, ksq), sq, p);
             counter += 1;
-            features[idx] = i;
-            features[idx + 1] = feature_index(color, orient(color, ksq), sq, p);
         }
     }
 };
@@ -75,9 +74,9 @@ struct FeatureSet
     static constexpr int INPUTS = T::INPUTS;
     static constexpr int MAX_ACTIVE_FEATURES = T::MAX_ACTIVE_FEATURES;
 
-    static void fill_features_sparse(int i, const TrainingDataEntry& e, int* features, int& counter, Color color)
+    static void fill_features_sparse(int i, const TrainingDataEntry& e, int64_t* features, int stride, int& counter, Color color)
     {
-        T::fill_features_sparse(i, e, features, counter, color);
+        T::fill_features_sparse(i, e, features, stride, counter, color);
     }
 };
 
@@ -93,19 +92,21 @@ struct SparseBatch
         is_white = new float[size];
         outcome = new float[size];
         score = new float[size];
-        white = new int[size * FeatureSet<Ts...>::MAX_ACTIVE_FEATURES * 2];
-        black = new int[size * FeatureSet<Ts...>::MAX_ACTIVE_FEATURES * 2];
+        white = new int64_t[size * FeatureSet<Ts...>::MAX_ACTIVE_FEATURES * 2];
+        black = new int64_t[size * FeatureSet<Ts...>::MAX_ACTIVE_FEATURES * 2];
 
         num_active_white_features = 0;
         num_active_black_features = 0;
-
-        std::memset(white, 0, size * FeatureSet<Ts...>::MAX_ACTIVE_FEATURES * 2 * sizeof(int));
-        std::memset(black, 0, size * FeatureSet<Ts...>::MAX_ACTIVE_FEATURES * 2 * sizeof(int));
 
         for(int i = 0; i < entries.size(); ++i)
         {
             fill_entry(FeatureSet<Ts...>{}, i, entries[i]);
         }
+
+        // Cheaper than a transposition later on.
+        const int stride = size * FeatureSet<Ts...>::MAX_ACTIVE_FEATURES;
+        std::memmove(white + num_active_white_features, white + stride, sizeof(int64_t) * num_active_white_features);
+        std::memmove(black + num_active_black_features, black + stride, sizeof(int64_t) * num_active_black_features);
     }
 
     int num_inputs;
@@ -116,8 +117,8 @@ struct SparseBatch
     float* score;
     int num_active_white_features;
     int num_active_black_features;
-    int* white;
-    int* black;
+    int64_t* white;
+    int64_t* black;
 
     ~SparseBatch()
     {
@@ -142,8 +143,9 @@ private:
     template <typename... Ts>
     void fill_features(FeatureSet<Ts...>, int i, const TrainingDataEntry& e)
     {
-        FeatureSet<Ts...>::fill_features_sparse(i, e, white, num_active_white_features, Color::White);
-        FeatureSet<Ts...>::fill_features_sparse(i, e, black, num_active_black_features, Color::Black);
+        const int stride = size * FeatureSet<Ts...>::MAX_ACTIVE_FEATURES;
+        FeatureSet<Ts...>::fill_features_sparse(i, e, white, stride, num_active_white_features, Color::White);
+        FeatureSet<Ts...>::fill_features_sparse(i, e, black, stride, num_active_black_features, Color::Black);
     }
 };
 
