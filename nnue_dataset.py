@@ -48,6 +48,7 @@ class TrainingDataProvider:
         destroy_part,
         filename,
         cyclic,
+        num_workers,
         batch_size=None):
 
         self.feature_set = feature_set.encode('utf-8')
@@ -57,12 +58,13 @@ class TrainingDataProvider:
         self.destroy_part = destroy_part
         self.filename = filename.encode('utf-8')
         self.cyclic = cyclic
+        self.num_workers = num_workers
         self.batch_size = batch_size
 
         if batch_size:
-            self.stream = self.create_stream(self.feature_set, self.filename, batch_size, cyclic)
+            self.stream = self.create_stream(self.feature_set, self.num_workers, self.filename, batch_size, cyclic)
         else:
-            self.stream = self.create_stream(self.feature_set, self.filename, cyclic)
+            self.stream = self.create_stream(self.feature_set, self.num_workers, self.filename, cyclic)
 
     def __iter__(self):
         return self
@@ -91,7 +93,7 @@ fetch_next_sparse_batch.argtypes = [ctypes.c_void_p]
 destroy_sparse_batch = dll.destroy_sparse_batch
 
 class SparseBatchProvider(TrainingDataProvider):
-    def __init__(self, feature_set, filename, batch_size, cyclic=True):
+    def __init__(self, feature_set, filename, batch_size, cyclic=True, num_workers=1):
         super(SparseBatchProvider, self).__init__(
             feature_set,
             create_sparse_batch_stream,
@@ -100,15 +102,17 @@ class SparseBatchProvider(TrainingDataProvider):
             destroy_sparse_batch,
             filename,
             cyclic,
+            num_workers,
             batch_size)
 
 class SparseBatchDataset(torch.utils.data.IterableDataset):
-  def __init__(self, feature_set, filename, batch_size, cyclic=True):
+  def __init__(self, feature_set, filename, batch_size, cyclic=True, num_workers=1):
     super(SparseBatchDataset).__init__()
     self.feature_set = feature_set
     self.filename = filename
     self.batch_size = batch_size
     self.cyclic = cyclic
+    self.num_workers = num_workers
 
   def __iter__(self):
-    return SparseBatchProvider(self.feature_set, self.filename, self.batch_size, cyclic=self.cyclic)
+    return SparseBatchProvider(self.feature_set, self.filename, self.batch_size, cyclic=self.cyclic, num_workers=self.num_workers)
