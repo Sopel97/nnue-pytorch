@@ -7,12 +7,13 @@ import halfkp
 from torch import set_num_threads as t_set_num_threads
 from pytorch_lightning import loggers as pl_loggers
 from torch.utils.data import DataLoader, Dataset
+import torch
 
-def data_loader_cc(train_filename, val_filename, num_workers, batch_size, filtered):
+def data_loader_cc(train_filename, val_filename, num_workers, batch_size, filtered, num_threads):
   # Epoch and validation sizes are arbitrary
   epoch_size = 100000000
   val_size = 1000000
-  train_infinite = nnue_dataset.SparseBatchDataset(halfkp.FACTOR_NAME, train_filename, batch_size, num_workers=num_workers, filtered=filtered)
+  train_infinite = nnue_dataset.AsyncSparseBatchDataset(halfkp.FACTOR_NAME, train_filename, batch_size, num_workers=num_workers, filtered=filtered, num_threads=num_threads)
   val_infinite = nnue_dataset.SparseBatchDataset(halfkp.FACTOR_NAME, val_filename, batch_size, filtered=filtered)
   # num_workers has to be 0 for sparse, and 1 for dense
   # it currently cannot work in parallel mode but it shouldn't need to
@@ -62,7 +63,7 @@ def main():
     train, val = data_loader_py(args.train, args.val, batch_size)
   else:
     print('Using c++ data loader')
-    train, val = data_loader_cc(args.train, args.val, args.num_workers, batch_size, args.smart_fen_skipping)
+    train, val = data_loader_cc(args.train, args.val, args.num_workers, batch_size, args.smart_fen_skipping, torch.get_num_threads())
 
   logdir = args.default_root_dir if args.default_root_dir else 'logs/'
   print('Using log dir {}'.format(logdir), flush=True)
