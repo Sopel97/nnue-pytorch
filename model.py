@@ -12,39 +12,36 @@ L2 = 32
 L3 = 32
 
 def scatter(inputs, target_gpus, dim=0):
-    r"""
-    Slices tensors into approximately equal chunks and
-    distributes them across given GPUs. Duplicates
-    references to objects that are not tensors.
-    """
-    def scatter_map(obj):
-      if len(obj[0]) != len(targets):
-        raise Exception('The number of batches doesn\'t match the number of targets')
-      device_id = 0
-      return [[obj[0][device_id]] for targets in target_gpus]
+  # We get a list of batches and produce a list of batches.
+  # Don't ask me how this pile of [] works. It just works.
+  def scatter_map(obj):
+    if len(obj[0]) != len(target_gpus):
+      raise Exception('The number of batches doesn\'t match the number of targets')
+    return [[obj[0][i]] for i, targets in enumerate(target_gpus)]
 
-    # After scatter_map is called, a scatter_map cell will exist. This cell
-    # has a reference to the actual function scatter_map, which has references
-    # to a closure that has a reference to the scatter_map cell (because the
-    # fn is recursive). To avoid this reference cycle, we set the function to
-    # None, clearing the cell
-    try:
-        return scatter_map(inputs)
-    finally:
-        scatter_map = None
+  # After scatter_map is called, a scatter_map cell will exist. This cell
+  # has a reference to the actual function scatter_map, which has references
+  # to a closure that has a reference to the scatter_map cell (because the
+  # fn is recursive). To avoid this reference cycle, we set the function to
+  # None, clearing the cell
+  try:
+      return scatter_map(inputs)
+  finally:
+      scatter_map = None
 
 
 def scatter_kwargs(inputs, kwargs, target_gpus, dim=0):
-    r"""Scatter with support for kwargs dictionary"""
-    inputs = scatter(inputs, target_gpus, dim) if inputs else []
-    kwargs = scatter(kwargs, target_gpus, dim) if kwargs else []
-    if len(inputs) < len(kwargs):
-        inputs.extend([() for _ in range(len(kwargs) - len(inputs))])
-    elif len(kwargs) < len(inputs):
-        kwargs.extend([{} for _ in range(len(inputs) - len(kwargs))])
-    inputs = tuple(inputs)
-    kwargs = tuple(kwargs)
-    return inputs, kwargs
+  # Some more stuff that's necessary but doesn't make sense and is
+  # not documented at all how to do correctly. It just works.
+  inputs = scatter(inputs, target_gpus, dim) if inputs else []
+  kwargs = scatter(kwargs, target_gpus, dim) if kwargs else []
+  if len(inputs) < len(kwargs):
+    inputs.extend([() for _ in range(len(kwargs) - len(inputs))])
+  elif len(kwargs) < len(inputs):
+    kwargs.extend([{} for _ in range(len(inputs) - len(kwargs))])
+  inputs = tuple(inputs)
+  kwargs = tuple(kwargs)
+  return inputs, kwargs
 
 
 class DataParallelV2(torch.nn.DataParallel):
@@ -84,23 +81,20 @@ class NNUE(pl.LightningModule):
 
   It is not ideal for training a Pytorch quantized model directly.
   """
-  def __init__(self, feature_set=halfkp, lambda_=1.0):
+  def __init__(self, feature_set=halfkp, lambda_=1.0, device_ids=None):
     super(NNUE, self).__init__()
 
     self.lambda_ = lambda_
     self.submodel = Submodel(feature_set)
-    self.submodel = DataParallelV2(self.submodel)
+    self.submodel = DataParallelV2(self.submodel, device_ids=device_ids)
 
   def forward(self, batches):
     return self.submodel.forward(batches)
 
   def step_(self, batch, batch_idx, loss_type):
-    data, outcome, score = batch
+    inputs, outcome, score = batch
 
-    outcome = outcome[:512]
-    score = score[:512]
-
-    q = self(data)
+    q = self(inputs)
     t = outcome
     # Divide score by 600.0 to match the expected NNUE scaling factor
     p = (score / 600.0).sigmoid()

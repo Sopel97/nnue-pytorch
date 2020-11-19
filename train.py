@@ -23,13 +23,13 @@ class FixedNumBatchesDataset(Dataset):
   def __getitem__(self, idx):
     return next(self.iter)
 
-def data_loader_cc(train_filename, val_filename, num_workers):
+def data_loader_cc(train_filename, val_filename, num_workers, num_devices=1):
   # Epoch and validation sizes are arbitrary
   epoch_size = 100000000
   val_size = 1000000
-  batch_size = 8192//16
-  train_infinite = nnue_dataset.SparseBatchDataset(halfkp.NAME, train_filename, batch_size, num_workers=num_workers)
-  val_infinite = nnue_dataset.SparseBatchDataset(halfkp.NAME, val_filename, batch_size)
+  batch_size = 8192
+  train_infinite = nnue_dataset.SparseBatchDataset(halfkp.NAME, train_filename, batch_size, num_workers=num_workers, num_devices=1)
+  val_infinite = nnue_dataset.SparseBatchDataset(halfkp.NAME, val_filename, batch_size, num_devices=1)
   # num_workers has to be 0 for sparse, and 1 for dense
   # it currently cannot work in parallel mode but it shouldn't need to
   train = DataLoader(FixedNumBatchesDataset(train_infinite, (epoch_size + batch_size - 1) // batch_size), batch_size=None, batch_sampler=None)
@@ -51,17 +51,21 @@ def main():
   parser.add_argument("--num-workers", default=1, type=int, dest='num_workers', help="Number of worker threads to use for data loading. Currently only works well for binpack.")
   args = parser.parse_args()
 
-  nnue = M.NNUE(halfkp, lambda_=args.lambda_)
+  tb_logger = pl_loggers.TensorBoardLogger('logs/')
+  trainer = pl.Trainer.from_argparse_args(args, logger=tb_logger)
+  device_ids = trainer.data_parallel_device_ids
+  num_devices = len(device_ids) if device_ids else 1
 
   if args.py_data:
+    # this won't work right now
     print('Using python data loader')
     train, val = data_loader_py(args.train, args.val)
   else:
     print('Using c++ data loader')
-    train, val = data_loader_cc(args.train, args.val, args.num_workers)
+    train, val = data_loader_cc(args.train, args.val, args.num_workers, num_devices=num_devices)
 
-  tb_logger = pl_loggers.TensorBoardLogger('logs/')
-  trainer = pl.Trainer.from_argparse_args(args, logger=tb_logger)
+  nnue = M.NNUE(halfkp, lambda_=args.lambda_, device_ids=device_ids)
+
   trainer.fit(nnue, train, val)
 
 if __name__ == '__main__':
