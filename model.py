@@ -18,7 +18,10 @@ def scatter(inputs, target_gpus, dim=0):
     references to objects that are not tensors.
     """
     def scatter_map(obj):
-        return [[obj[0][0]] for targets in target_gpus]
+      if len(obj[0]) != len(targets):
+        raise Exception('The number of batches doesn\'t match the number of targets')
+      device_id = 0
+      return [[obj[0][device_id]] for targets in target_gpus]
 
     # After scatter_map is called, a scatter_map cell will exist. This cell
     # has a reference to the actual function scatter_map, which has references
