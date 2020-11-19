@@ -76,14 +76,7 @@ class TrainingDataProvider:
         if v1 and v2:
             tensors1 = v1.contents.get_tensors()
             tensors2 = v2.contents.get_tensors()
-            tensors = (
-                tensors1[0],
-                tensors1[1],
-                (tensors1[2], tensors2[2]),
-                (tensors1[3], tensors2[3]),
-                tensors1[4],
-                tensors1[5],
-                )
+            tensors = ((tensors1[0], tensors1[1],tensors1[2],tensors1[3]),(tensors2[0],tensors2[1],tensors2[2],tensors2[3])), torch.cat((tensors1[4], tensors2[4])), torch.cat((tensors1[5], tensors2[5]))
             self.destroy_part(v1)
             self.destroy_part(v2)
             return tensors

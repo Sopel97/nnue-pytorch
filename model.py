@@ -45,8 +45,32 @@ def scatter_kwargs(inputs, kwargs, target_gpus, dim=0):
 
 
 class DataParallelV2(torch.nn.DataParallel):
-    def scatter(self, inputs, kwargs, device_ids):
-        return scatter_kwargs(inputs, kwargs, device_ids, dim=self.dim)
+  def scatter(self, inputs, kwargs, device_ids):
+    return scatter_kwargs(inputs, kwargs, device_ids, dim=self.dim)
+
+class Submodel(nn.Module):
+  def __init__(self, feature_set=halfkp):
+    "create a layer that simply calls `func` with `x`"
+    super().__init__()
+
+    self.input = nn.Linear(feature_set.INPUTS, L1)
+    #self.input = DataParallelV2(self.input)
+
+    self.l1 = nn.Linear(2 * L1, L2)
+    self.l2 = nn.Linear(L2, L3)
+    self.output = nn.Linear(L3, 1)
+
+  def forward(self, x):
+    us, them, w_in, b_in = x
+    w = self.input(w_in)
+    b = self.input(b_in)
+    l0_ = (us * torch.cat([w, b], dim=1)) + (them * torch.cat([b, w], dim=1))
+    # clamp here is used as a clipped relu to (0.0, 1.0)
+    l0_ = torch.clamp(l0_, 0.0, 1.0)
+    l1_ = torch.clamp(self.l1(l0_), 0.0, 1.0)
+    l2_ = torch.clamp(self.l2(l1_), 0.0, 1.0)
+    x = self.output(l2_)
+    return x
 
 class NNUE(pl.LightningModule):
   """
@@ -59,29 +83,21 @@ class NNUE(pl.LightningModule):
   """
   def __init__(self, feature_set=halfkp, lambda_=1.0):
     super(NNUE, self).__init__()
-    self.input = nn.Linear(feature_set.INPUTS, L1)
-    self.input = DataParallelV2(self.input)
 
-    self.l1 = nn.Linear(2 * L1, L2)
-    self.l2 = nn.Linear(L2, L3)
-    self.output = nn.Linear(L3, 1)
     self.lambda_ = lambda_
+    self.submodel = Submodel(feature_set)
+    self.submodel = DataParallelV2(self.submodel)
 
-  def forward(self, us, them, w_in, b_in):
-    w = self.input(w_in)
-    b = self.input(b_in)
-    l0_ = (us * torch.cat([w, b], dim=1)) + (them * torch.cat([b, w], dim=1))
-    # clamp here is used as a clipped relu to (0.0, 1.0)
-    l0_ = torch.clamp(l0_, 0.0, 1.0)
-    l1_ = torch.clamp(self.l1(l0_), 0.0, 1.0)
-    l2_ = torch.clamp(self.l2(l1_), 0.0, 1.0)
-    x = self.output(l2_)
-    return x
+  def forward(self, batches):
+    return self.submodel.forward(batches)
 
   def step_(self, batch, batch_idx, loss_type):
-    us, them, white, black, outcome, score = batch
+    data, outcome, score = batch
 
-    q = self(us, them, white, black)
+    outcome = outcome[:512]
+    score = score[:512]
+
+    q = self(data)
     t = outcome
     # Divide score by 600.0 to match the expected NNUE scaling factor
     p = (score / 600.0).sigmoid()
