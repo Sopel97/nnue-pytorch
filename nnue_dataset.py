@@ -70,11 +70,22 @@ class TrainingDataProvider:
         return self
 
     def __next__(self):
-        v = self.fetch_next(self.stream)
+        v1 = self.fetch_next(self.stream)
+        v2 = self.fetch_next(self.stream)
 
-        if v:
-            tensors = v.contents.get_tensors()
-            self.destroy_part(v)
+        if v1 and v2:
+            tensors1 = v1.contents.get_tensors()
+            tensors2 = v2.contents.get_tensors()
+            tensors = (
+                tensors1[0],
+                tensors1[1],
+                (tensors1[2], tensors2[2]),
+                (tensors1[3], tensors2[3]),
+                tensors1[4],
+                tensors1[5],
+                )
+            self.destroy_part(v1)
+            self.destroy_part(v2)
             return tensors
         else:
             raise StopIteration

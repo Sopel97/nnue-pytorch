@@ -6,6 +6,9 @@ import pytorch_lightning as pl
 import halfkp
 from pytorch_lightning import loggers as pl_loggers
 from torch.utils.data import DataLoader, Dataset
+import torch
+
+torch.set_num_threads(1)
 
 class FixedNumBatchesDataset(Dataset):
   def __init__(self, dataset, num_batches):
@@ -24,7 +27,7 @@ def data_loader_cc(train_filename, val_filename, num_workers):
   # Epoch and validation sizes are arbitrary
   epoch_size = 100000000
   val_size = 1000000
-  batch_size = 8192
+  batch_size = 8192//16
   train_infinite = nnue_dataset.SparseBatchDataset(halfkp.NAME, train_filename, batch_size, num_workers=num_workers)
   val_infinite = nnue_dataset.SparseBatchDataset(halfkp.NAME, val_filename, batch_size)
   # num_workers has to be 0 for sparse, and 1 for dense

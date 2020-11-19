@@ -4,11 +4,49 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 import pytorch_lightning as pl
+from torch.nn.parallel._functions import Scatter
 
 # 3 layer fully connected network
 L1 = 256
 L2 = 32
 L3 = 32
+
+def scatter(inputs, target_gpus, dim=0):
+    r"""
+    Slices tensors into approximately equal chunks and
+    distributes them across given GPUs. Duplicates
+    references to objects that are not tensors.
+    """
+    def scatter_map(obj):
+        return [[obj[0][0]] for targets in target_gpus]
+
+    # After scatter_map is called, a scatter_map cell will exist. This cell
+    # has a reference to the actual function scatter_map, which has references
+    # to a closure that has a reference to the scatter_map cell (because the
+    # fn is recursive). To avoid this reference cycle, we set the function to
+    # None, clearing the cell
+    try:
+        return scatter_map(inputs)
+    finally:
+        scatter_map = None
+
+
+def scatter_kwargs(inputs, kwargs, target_gpus, dim=0):
+    r"""Scatter with support for kwargs dictionary"""
+    inputs = scatter(inputs, target_gpus, dim) if inputs else []
+    kwargs = scatter(kwargs, target_gpus, dim) if kwargs else []
+    if len(inputs) < len(kwargs):
+        inputs.extend([() for _ in range(len(kwargs) - len(inputs))])
+    elif len(kwargs) < len(inputs):
+        kwargs.extend([{} for _ in range(len(inputs) - len(kwargs))])
+    inputs = tuple(inputs)
+    kwargs = tuple(kwargs)
+    return inputs, kwargs
+
+
+class DataParallelV2(torch.nn.DataParallel):
+    def scatter(self, inputs, kwargs, device_ids):
+        return scatter_kwargs(inputs, kwargs, device_ids, dim=self.dim)
 
 class NNUE(pl.LightningModule):
   """
@@ -19,16 +57,11 @@ class NNUE(pl.LightningModule):
 
   It is not ideal for training a Pytorch quantized model directly.
   """
-  def __init__(self, feature_set=halfkp, lambda_=1.0, factorized=False):
+  def __init__(self, feature_set=halfkp, lambda_=1.0):
     super(NNUE, self).__init__()
-    if factorized:
-      num_inputs = feature_set.FACTORIZED_INPUTS
-    else:
-      num_inputs = feature_set.INPUTS
-    self.input = nn.Linear(num_inputs, L1)
-    if factorized:
-      # Zero out the weights for the factors
-      self.input.weight[feature_set.INPUTS:] + torch.zeros(feature_set.FACTORIZED_INPUTS - feature_set.INPUTS)
+    self.input = nn.Linear(feature_set.INPUTS, L1)
+    self.input = DataParallelV2(self.input)
+
     self.l1 = nn.Linear(2 * L1, L2)
     self.l2 = nn.Linear(L2, L3)
     self.output = nn.Linear(L3, 1)
