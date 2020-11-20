@@ -28,8 +28,8 @@ class SparseBatch(ctypes.Structure):
     def get_tensors(self, device_id):
         us = torch.from_numpy(np.ctypeslib.as_array(self.is_white, shape=(self.size, 1))).clone().cuda(device_id, non_blocking=True)
         them = 1.0 - us
-        outcome = torch.from_numpy(np.ctypeslib.as_array(self.outcome, shape=(self.size, 1))).clone().cuda(device_id, non_blocking=True)
-        score = torch.from_numpy(np.ctypeslib.as_array(self.score, shape=(self.size, 1))).clone().cuda(device_id, non_blocking=True)
+        outcome = torch.from_numpy(np.ctypeslib.as_array(self.outcome, shape=(self.size, 1))).clone().cuda(non_blocking=True)
+        score = torch.from_numpy(np.ctypeslib.as_array(self.score, shape=(self.size, 1))).clone().cuda(non_blocking=True)
         iw = torch.from_numpy(np.ctypeslib.as_array(self.white, shape=(self.num_active_white_features, 2)).transpose()).clone()
         ib = torch.from_numpy(np.ctypeslib.as_array(self.black, shape=(self.num_active_white_features, 2)).transpose()).clone()
         white = torch.sparse.FloatTensor(iw.long().cuda(device_id, non_blocking=True), torch.ones((self.num_active_white_features), dtype=torch.float32).cuda(device_id, non_blocking=True), (self.size, self.num_inputs))
