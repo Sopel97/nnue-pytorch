@@ -50,7 +50,7 @@ class TrainingDataProvider:
         cyclic,
         num_workers,
         batch_size=None,
-        num_devices=1):
+        device_ids=1):
 
         self.feature_set = feature_set.encode('utf-8')
         self.create_stream = create_stream
@@ -61,7 +61,7 @@ class TrainingDataProvider:
         self.cyclic = cyclic
         self.num_workers = num_workers
         self.batch_size = batch_size
-        self.num_devices = num_devices
+        self.device_ids = device_ids
 
         if batch_size:
             self.stream = self.create_stream(self.feature_set, self.num_workers, self.filename, batch_size, cyclic)
@@ -72,11 +72,11 @@ class TrainingDataProvider:
         return self
 
     def __next__(self):
-        v_raw = [self.fetch_next(self.stream) for i in range(self.num_devices)]
+        v_raw = [self.fetch_next(self.stream) for i in self.device_ids]
 
         if all(v_raw):
-            v = [vr.contents.get_tensors(i) for i, vr in enumerate(v_raw)]
-            tensors = tuple(v[i][:4] for i in range(self.num_devices)), torch.cat(tuple(v[i][4] for i in range(self.num_devices))), torch.cat(tuple(v[i][5] for i in range(self.num_devices)))
+            v = [vr.contents.get_tensors(device_id) for vr, device_id in zip(v_raw, self.device_ids)]
+            tensors = tuple(v[i][:4] for i in range(len(self.device_ids))), torch.cat(tuple(v[i][4] for i in range(len(self.device_ids)))), torch.cat(tuple(v[i][5] for i in range(len(self.device_ids))))
             for vv in v_raw:
                 self.destroy_part(vv)
             return tensors
@@ -100,7 +100,7 @@ fetch_next_sparse_batch.argtypes = [ctypes.c_void_p]
 destroy_sparse_batch = dll.destroy_sparse_batch
 
 class SparseBatchProvider(TrainingDataProvider):
-    def __init__(self, feature_set, filename, batch_size, cyclic=True, num_workers=1, num_devices=1):
+    def __init__(self, feature_set, filename, batch_size, cyclic=True, num_workers=1, device_ids=[0]):
         super(SparseBatchProvider, self).__init__(
             feature_set,
             create_sparse_batch_stream,
@@ -111,17 +111,17 @@ class SparseBatchProvider(TrainingDataProvider):
             cyclic,
             num_workers,
             batch_size,
-            num_devices)
+            device_ids)
 
 class SparseBatchDataset(torch.utils.data.IterableDataset):
-  def __init__(self, feature_set, filename, batch_size, cyclic=True, num_workers=1, num_devices=1):
+  def __init__(self, feature_set, filename, batch_size, cyclic=True, num_workers=1, device_ids=[0]):
     super(SparseBatchDataset).__init__()
     self.feature_set = feature_set
     self.filename = filename
     self.batch_size = batch_size
     self.cyclic = cyclic
     self.num_workers = num_workers
-    self.num_devices = num_devices
+    self.device_ids = device_ids
 
   def __iter__(self):
-    return SparseBatchProvider(self.feature_set, self.filename, self.batch_size, cyclic=self.cyclic, num_workers=self.num_workers, num_devices=1)
+    return SparseBatchProvider(self.feature_set, self.filename, self.batch_size, cyclic=self.cyclic, num_workers=self.num_workers, device_ids=self.device_ids)

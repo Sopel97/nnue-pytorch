@@ -86,6 +86,7 @@ class NNUE(pl.LightningModule):
 
     self.lambda_ = lambda_
     self.submodel = Submodel(feature_set)
+    self.submodel.cuda()
     self.submodel = DataParallelV2(self.submodel, device_ids=device_ids)
 
   def forward(self, batches):
