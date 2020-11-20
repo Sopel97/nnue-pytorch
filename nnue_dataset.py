@@ -25,15 +25,15 @@ class SparseBatch(ctypes.Structure):
         ('black', ctypes.POINTER(ctypes.c_int))
     ]
 
-    def get_tensors(self):
-        us = torch.from_numpy(np.ctypeslib.as_array(self.is_white, shape=(self.size, 1))).clone()
+    def get_tensors(self, device_id):
+        us = torch.from_numpy(np.ctypeslib.as_array(self.is_white, shape=(self.size, 1))).clone().cuda(device_id, non_blocking=True)
         them = 1.0 - us
-        outcome = torch.from_numpy(np.ctypeslib.as_array(self.outcome, shape=(self.size, 1))).clone()
-        score = torch.from_numpy(np.ctypeslib.as_array(self.score, shape=(self.size, 1))).clone()
+        outcome = torch.from_numpy(np.ctypeslib.as_array(self.outcome, shape=(self.size, 1))).clone().cuda(device_id, non_blocking=True)
+        score = torch.from_numpy(np.ctypeslib.as_array(self.score, shape=(self.size, 1))).clone().cuda(device_id, non_blocking=True)
         iw = torch.from_numpy(np.ctypeslib.as_array(self.white, shape=(self.num_active_white_features, 2)).transpose()).clone()
         ib = torch.from_numpy(np.ctypeslib.as_array(self.black, shape=(self.num_active_white_features, 2)).transpose()).clone()
-        white = torch.sparse.FloatTensor(iw.long(), torch.ones((self.num_active_white_features), dtype=torch.float32), (self.size, self.num_inputs))
-        black = torch.sparse.FloatTensor(ib.long(), torch.ones((self.num_active_black_features), dtype=torch.float32), (self.size, self.num_inputs))
+        white = torch.sparse.FloatTensor(iw.long().cuda(device_id, non_blocking=True), torch.ones((self.num_active_white_features), dtype=torch.float32).cuda(device_id, non_blocking=True), (self.size, self.num_inputs))
+        black = torch.sparse.FloatTensor(ib.long().cuda(device_id, non_blocking=True), torch.ones((self.num_active_black_features), dtype=torch.float32).cuda(device_id, non_blocking=True), (self.size, self.num_inputs))
         return us, them, white, black, outcome, score
 
 SparseBatchPtr = ctypes.POINTER(SparseBatch)
@@ -75,7 +75,7 @@ class TrainingDataProvider:
         v_raw = [self.fetch_next(self.stream) for i in range(self.num_devices)]
 
         if all(v_raw):
-            v = [vr.contents.get_tensors() for vr in v_raw]
+            v = [vr.contents.get_tensors(i) for i, vr in enumerate(v_raw)]
             tensors = tuple(v[i][:4] for i in range(self.num_devices)), torch.cat(tuple(v[i][4] for i in range(self.num_devices))), torch.cat(tuple(v[i][5] for i in range(self.num_devices)))
             for vv in v_raw:
                 self.destroy_part(vv)

@@ -7,6 +7,7 @@ import halfkp
 from pytorch_lightning import loggers as pl_loggers
 from torch.utils.data import DataLoader, Dataset
 import torch
+import os
 
 torch.set_num_threads(1)
 
@@ -53,7 +54,8 @@ def main():
 
   tb_logger = pl_loggers.TensorBoardLogger('logs/')
   trainer = pl.Trainer.from_argparse_args(args, logger=tb_logger)
-  device_ids = trainer.data_parallel_device_ids
+  os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+  device_ids = [0]
   num_devices = len(device_ids) if device_ids else 1
 
   if args.py_data:
