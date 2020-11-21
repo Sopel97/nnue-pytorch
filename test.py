@@ -3,11 +3,11 @@ from torch import nn
 import copy
 import time
 
-def test(batch_size, device_ids):
+def test(batch_size, devices):
     # Seed the rng to have deterministic tests
     torch.manual_seed(12345)
 
-    print('Device ids: ' + str(device_ids))
+    print('Devices: ' + str(devices))
 
     # For some reason MSE loss requires very low lr otherwise it blows up
     learning_rate = 0.001
@@ -17,7 +17,7 @@ def test(batch_size, device_ids):
         nn.Linear(512, 512),
         nn.Linear(512, 512),
         nn.Linear(512, 1)
-        ).cuda(device_ids[0])
+        ).to(device=devices[0])
 
     # Whatever loss
     loss_fn = nn.MSELoss()
@@ -26,15 +26,15 @@ def test(batch_size, device_ids):
     optimizer = torch.optim.Adagrad(model.parameters(), lr=learning_rate)
 
     # 0. We have 1 model, N devices, N batches, N outcome tensors
-    def step(model, batches, outcomes, device_ids):
+    def step(model, batches, outcomes, devices):
         # 1. Replicate the model to all devices
-        local_models = [model] + [copy.deepcopy(model).cuda(device_id) for device_id in device_ids[1:]]
+        local_models = [model] + [copy.deepcopy(model).to(device=device) for device in devices[1:]]
 
         # 2. Make each model do forward on 1 batch -> N x forward
-        outs = [m(batch.cuda(device_id, non_blocking=True)) for batch, m, device_id in zip(batches, local_models, device_ids)]
+        outs = [m(batch.to(device=device, non_blocking=True)) for batch, m, device in zip(batches, local_models, devices)]
 
         # 3. Compute loss for each separate forward -> N losses
-        losses = [loss_fn(out, outcome.cuda(device_id, non_blocking=True)) for outcome, out, device_id in zip(outcomes, outs, device_ids)]
+        losses = [loss_fn(out, outcome.to(device=device, non_blocking=True)) for outcome, out, device in zip(outcomes, outs, devices)]
 
         # 4. Remove gradients from all parameters. This has to be done before backwards.
         #    This should be better than zero_grad because it doesn't block and makes
@@ -49,15 +49,13 @@ def test(batch_size, device_ids):
 
         # 6. Non blocking transfer of all gradients to the main device
         #    This shouldn't be that much data for our small net
-        for m in local_models[1:]:
-            for param in m.parameters():
-                param.cuda(device_ids[0], non_blocking=True)
+        grads_by_model = [[param.grad.to(device=devices[0], non_blocking=True) for param in m.parameters()] for m in local_models[1:]]
 
         # 7. Accumualate gradients. We don't want to average them because we're not
         #    splitting the batch, we're taking multiple batches in one step.
-        for m in local_models[1:]:
-            for main_param, param in zip(model.parameters(), m.parameters()):
-                main_param.grad += param.grad
+        for grads in grads_by_model:
+            for main_param, param in zip(model.parameters(), grads):
+                main_param.grad += param
 
         # 8. Optimizer runs with the accumulated gradients on the main model only.
         optimizer.step()
@@ -69,15 +67,15 @@ def test(batch_size, device_ids):
     # so we do it once because it's faster.
     # Note that we're scaling the batch size by the number of devices so that
     # it's transparent to the user.
-    batches = [torch.rand(batch_size // len(device_ids), 512).cuda(device_id, non_blocking=True) for device_id in device_ids]
-    outcomes = [torch.rand(batch_size // len(device_ids), 1).cuda(device_ids[0], non_blocking=True) for device_id in device_ids]
+    batches = [torch.rand(batch_size // len(devices), 512).to(device=device, non_blocking=True) for device in devices]
+    outcomes = [torch.rand(batch_size // len(devices), 1).to(device=device, non_blocking=True) for device in devices]
 
     start_time = time.time()
 
     losses = []
     # We do a fixed number of batch_size chunks, as the user expects
-    for i in range(200):
-        losses.append(step(model, batches, outcomes, device_ids))
+    for i in range(10):
+        losses.append(step(model, batches, outcomes, devices))
 
     # Ensure everything completed before measuring time
     torch.cuda.synchronize()
@@ -91,7 +89,7 @@ def test(batch_size, device_ids):
 
 batch_size = 2**12
 # Run twice to prevent initialization from skewing the results
-test(batch_size, [0])
-test(batch_size, [0, 0])
-test(batch_size, [0])
-test(batch_size, [0, 0])
+test(batch_size, ['cpu'])
+test(batch_size, ['cpu', 'cuda:0'])
+test(batch_size, ['cpu'])
+test(batch_size, ['cpu', 'cuda:0'])
