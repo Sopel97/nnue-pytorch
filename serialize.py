@@ -53,17 +53,19 @@ class NNUEWriter():
     self.write_header()
     self.int32(0x5d69d7b8) # Feature transformer hash
     self.write_feature_transformer(model.input)
-    self.int32(0x63337156) # FC layers hash
+    self.int32(0x97639032) # FC layers hash
     self.write_fc_layer(model.l1)
     self.write_fc_layer(model.l2)
+    self.write_fc_layer(model.l3)
     self.write_fc_layer(model.output, is_output=True)
 
   def write_header(self):
     self.int32(0x7AF32F16) # version
-    self.int32(0x3e5aa6ee) # halfkp network hash
+    self.int32(0xca0a478a) # halfkp network hash
     description = b"Features=HalfKP(Friend)[41024->256x2],"
-    description += b"Network=AffineTransform[1<-32](ClippedReLU[32](AffineTransform[32<-32]"
-    description += b"(ClippedReLU[32](AffineTransform[32<-512](InputSlice[512(0:512)])))))"
+    description += b"Network=AffineTransform[1<-96](ClippedReLU[32+64](AffineTransform[32+64<-64]"
+    description += b"(ClippedReLU[32+32](AffineTransform[32+32<-32]"
+    description += b"(ClippedReLU[32](AffineTransform[32<-512](InputSlice[512(0:512)]))))))"
     self.int32(len(description)) # Network definition
     self.buf.extend(description)
 
@@ -106,7 +108,7 @@ class NNUEWriter():
     self.buf.extend(weight.flatten().numpy().tobytes())
 
   def int32(self, v):
-    self.buf.extend(struct.pack("<i", v))
+    self.buf.extend(struct.pack("<I", v))
 
 class NNUEReader():
   def __init__(self, f):
@@ -116,14 +118,15 @@ class NNUEReader():
     self.read_header()
     self.read_int32(0x5d69d7b8) # Feature transformer hash
     self.read_feature_transformer(self.model.input)
-    self.read_int32(0x63337156) # FC layers hash
+    self.read_int32(0x97639032) # FC layers hash
     self.read_fc_layer(self.model.l1)
     self.read_fc_layer(self.model.l2)
+    self.read_fc_layer(self.model.l3)
     self.read_fc_layer(self.model.output, is_output=True)
 
   def read_header(self):
     self.read_int32(0x7AF32F16) # version
-    self.read_int32(0x3e5aa6ee) # halfkp network hash
+    self.read_int32(0xca0a478a) # halfkp network hash
     desc_len = self.read_int32() # Network definition
     description = self.f.read(desc_len)
 

@@ -10,6 +10,7 @@ import pytorch_lightning as pl
 L1 = 256
 L2 = 32
 L3 = 32
+L4 = 32
 
 class NNUE(pl.LightningModule):
   """
@@ -33,7 +34,8 @@ class NNUE(pl.LightningModule):
 
     self.l1 = nn.Linear(2 * L1, L2)
     self.l2 = nn.Linear(L2, L3)
-    self.output = nn.Linear(L3, 1)
+    self.l3 = nn.Linear(L3 + L2, L4)
+    self.output = nn.Linear(L4 + L3 + L2, 1)
     self.lambda_ = lambda_
 
   def forward(self, us, them, w_in, b_in):
@@ -43,8 +45,9 @@ class NNUE(pl.LightningModule):
     # clamp here is used as a clipped relu to (0.0, 1.0)
     l0_ = torch.clamp(l0_, 0.0, 1.0)
     l1_ = torch.clamp(self.l1(l0_), 0.0, 1.0)
-    l2_ = torch.clamp(self.l2(l1_), 0.0, 1.0)
-    x = self.output(l2_)
+    l2_ = torch.cat([torch.clamp(self.l2(l1_), 0.0, 1.0), l1_], dim=1)
+    l3_ = torch.cat([torch.clamp(self.l3(l2_), 0.0, 1.0), l2_], dim=1)
+    x = self.output(l3_)
     return x
 
   def step_(self, batch, batch_idx, loss_type):
