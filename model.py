@@ -9,6 +9,7 @@ import pytorch_lightning as pl
 L1 = 256
 L2 = 32
 L3 = 32
+L4 = 32
 
 class NNUE(pl.LightningModule):
   """
@@ -25,7 +26,8 @@ class NNUE(pl.LightningModule):
     self.feature_set = feature_set
     self.l1 = nn.Linear(2 * L1, L2)
     self.l2 = nn.Linear(L2, L3)
-    self.output = nn.Linear(L3, 1)
+    self.l3 = nn.Linear(L3 + L2, L4)
+    self.output = nn.Linear(L4 + L3 + L2, 1)
     self.lambda_ = lambda_
 
     self._zero_virtual_feature_weights()
@@ -56,16 +58,19 @@ class NNUE(pl.LightningModule):
     input_bias = self.input.bias
     l1_bias = self.l1.bias
     l2_bias = self.l2.bias
+    l3_bias = self.l3.bias
     output_bias = self.output.bias
     with torch.no_grad():
       input_bias.add_(0.5)
       input_bias[L1] = 0.0
       l1_bias.add_(0.5)
       l2_bias.add_(0.5)
+      l3_bias.add_(0.5)
       output_bias.fill_(0.0)
     self.input.bias = nn.Parameter(input_bias)
     self.l1.bias = nn.Parameter(l1_bias)
     self.l2.bias = nn.Parameter(l2_bias)
+    self.l3.bias = nn.Parameter(l3_bias)
     self.output.bias = nn.Parameter(output_bias)
 
   def _init_psqt(self):
@@ -126,8 +131,9 @@ class NNUE(pl.LightningModule):
     # clamp here is used as a clipped relu to (0.0, 1.0)
     l0_ = torch.clamp(l0_, 0.0, 1.0)
     l1_ = torch.clamp(self.l1(l0_), 0.0, 1.0)
-    l2_ = torch.clamp(self.l2(l1_), 0.0, 1.0)
-    x = self.output(l2_) + (wpsqt - bpsqt) * (us - 0.5)
+    l2_ = torch.cat([l1_, torch.clamp(self.l2(l1_), 0.0, 1.0)], dim=1)
+    l3_ = torch.cat([l2_, torch.clamp(self.l3(l2_), 0.0, 1.0)], dim=1)
+    x = self.output(l3_) + (wpsqt - bpsqt) * (us - 0.5)
     return x
 
   def step_(self, batch, batch_idx, loss_type):
@@ -173,7 +179,7 @@ class NNUE(pl.LightningModule):
     LR = 1e-3
     train_params = [
       {'params' : self.get_specific_layers([self.input]), 'lr' : LR, 'min_weight' : -(2**15-1)/127, 'max_weight' : (2**15-1)/127 },
-      {'params' : self.get_specific_layers([self.l1, self.l2]), 'lr' : LR, 'min_weight' : -127/64, 'max_weight' : 127/64 },
+      {'params' : self.get_specific_layers([self.l1, self.l2, self.l3]), 'lr' : LR, 'min_weight' : -127/64, 'max_weight' : 127/64 },
       {'params' : self.get_specific_layers([self.output]), 'lr' : LR / 10, 'min_weight' : -127*127/9600, 'max_weight' : 127*127/9600 },
     ]
     # increasing the eps leads to less saturated nets with a few dead neurons

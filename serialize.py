@@ -40,6 +40,7 @@ class NNUEWriter():
     self.int32(fc_hash) # FC layers hash
     self.write_fc_layer(model.l1)
     self.write_fc_layer(model.l2)
+    self.write_fc_layer(model.l3)
     self.write_fc_layer(model.output, is_output=True)
 
   @staticmethod
@@ -49,7 +50,7 @@ class NNUEWriter():
     prev_hash ^= (M.L1 * 2)
 
     # Fully connected layers
-    layers = [model.l1, model.l2, model.output]
+    layers = [model.l1, model.l2, model.l3, model.output]
     for layer in layers:
       layer_hash = 0xCC03DAE4
       layer_hash += layer.out_features
@@ -148,6 +149,7 @@ class NNUEReader():
     self.read_int32(fc_hash) # FC layers hash
     self.read_fc_layer(self.model.l1)
     self.read_fc_layer(self.model.l2)
+    self.read_fc_layer(self.model.l3)
     self.read_fc_layer(self.model.output, is_output=True)
 
   def read_header(self, feature_set, fc_hash):
