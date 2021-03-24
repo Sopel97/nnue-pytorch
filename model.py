@@ -7,8 +7,53 @@ import pytorch_lightning as pl
 
 # 3 layer fully connected network
 L1 = 256
+LAs = 256
+LAp = 16
 L2 = 32
 L3 = 32
+
+class SemiLinear(nn.Module):
+  def __init__(self, in_features, out_features, num_parts):
+    super(SemiLinear, self).__init__()
+
+    if in_features % num_parts != 0:
+      raise Exception('')
+
+    if out_features % num_parts != 0:
+      raise Exception('')
+
+    self.in_features = in_features
+    self.out_features = out_features
+    self.num_parts = num_parts
+    self.in_part = in_features // num_parts
+    self.out_part = out_features // num_parts
+
+    self.parts = [nn.Linear(self.in_part, self.out_part) for i in range(num_parts)]
+
+  def forward(self, x):
+    parts_x = torch.split(x, self.in_part, dim=1)
+    parts_y = [p(xx) for p, xx in zip(self.parts, parts_x)]
+    y = torch.cat(parts_y, dim=1)
+    return y
+
+  def _correct_init_biases(self):
+    biases = [p.bias for p in self.parts]
+    with torch.no_grad():
+      for b in biases:
+        b.add_(0.5)
+    for p, b in zip(self.parts, biases):
+      p.bias = nn.Parameter(b)
+
+  def children(self):
+    return self.parts
+
+  def parameters(self):
+    return [c.weight for c in self.parts] + [c.bias for c in self.parts]
+
+def interleave(a, b):
+  c = torch.stack([a, b], dim=1)
+  d = torch.flatten(torch.transpose(c, 1, 2), start_dim=1, end_dim=2)
+  return d
 
 class NNUE(pl.LightningModule):
   """
@@ -23,7 +68,8 @@ class NNUE(pl.LightningModule):
     super(NNUE, self).__init__()
     self.input = nn.Linear(feature_set.num_features, L1 + 1)
     self.feature_set = feature_set
-    self.l1 = nn.Linear(2 * L1, L2)
+    self.la = SemiLinear(2 * L1, LAs, LAp)
+    self.l1 = nn.Linear(LAs, L2)
     self.l2 = nn.Linear(L2, L3)
     self.output = nn.Linear(L3, 1)
     self.lambda_ = lambda_
@@ -64,6 +110,7 @@ class NNUE(pl.LightningModule):
       l2_bias.add_(0.5)
       output_bias.fill_(0.0)
     self.input.bias = nn.Parameter(input_bias)
+    self.la._correct_init_biases()
     self.l1.bias = nn.Parameter(l1_bias)
     self.l2.bias = nn.Parameter(l2_bias)
     self.output.bias = nn.Parameter(output_bias)
@@ -122,10 +169,11 @@ class NNUE(pl.LightningModule):
     bp = self.input(b_in)
     w, wpsqt = torch.split(wp, L1, dim=1)
     b, bpsqt = torch.split(bp, L1, dim=1)
-    l0_ = (us * torch.cat([w, b], dim=1)) + (them * torch.cat([b, w], dim=1))
+    l0_ = (us * interleave(w, b)) + (them * interleave(b, w))
     # clamp here is used as a clipped relu to (0.0, 1.0)
     l0_ = torch.clamp(l0_, 0.0, 1.0)
-    l1_ = torch.clamp(self.l1(l0_), 0.0, 1.0)
+    la_ = torch.clamp(self.la(l0_), 0.0, 1.0)
+    l1_ = torch.clamp(self.l1(la_), 0.0, 1.0)
     l2_ = torch.clamp(self.l2(l1_), 0.0, 1.0)
     x = self.output(l2_) + (wpsqt - bpsqt) * (us - 0.5)
     return x
@@ -173,7 +221,7 @@ class NNUE(pl.LightningModule):
     LR = 1e-3
     train_params = [
       {'params' : self.get_specific_layers([self.input]), 'lr' : LR, 'min_weight' : -(2**15-1)/127, 'max_weight' : (2**15-1)/127 },
-      {'params' : self.get_specific_layers([self.l1, self.l2]), 'lr' : LR, 'min_weight' : -127/64, 'max_weight' : 127/64 },
+      {'params' : self.get_specific_layers([self.la, self.l1, self.l2]), 'lr' : LR, 'min_weight' : -127/64, 'max_weight' : 127/64 },
       {'params' : self.get_specific_layers([self.output]), 'lr' : LR / 10, 'min_weight' : -127*127/9600, 'max_weight' : 127*127/9600 },
     ]
     # increasing the eps leads to less saturated nets with a few dead neurons
