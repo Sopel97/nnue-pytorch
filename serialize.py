@@ -38,6 +38,7 @@ class NNUEWriter():
     self.int32(model.feature_set.hash ^ (M.L1*2)) # Feature transformer hash
     self.write_feature_transformer(model)
     self.int32(fc_hash) # FC layers hash
+    self.write_semi_fc_layer(model.la)
     self.write_fc_layer(model.l1)
     self.write_fc_layer(model.l2)
     self.write_fc_layer(model.output, is_output=True)
@@ -45,14 +46,20 @@ class NNUEWriter():
   @staticmethod
   def fc_hash(model):
     # InputSlice hash
-    prev_hash = 0xEC42E90D
-    prev_hash ^= (M.L1 * 2)
+    prev_hash = 0xDF31E90D
+    prev_hash ^= (M.L1 * 2) ^ (M.L1 << 4)
 
     # Fully connected layers
-    layers = [model.l1, model.l2, model.output]
+    layers = [model.la, model.l1, model.l2, model.output]
     for layer in layers:
-      layer_hash = 0xCC03DAE4
-      layer_hash += layer.out_features
+      if isinstance(layer, torch.nn.Linear):
+        layer_hash = 0xCC03DAE4
+        layer_hash += layer.out_features
+      elif isinstance(layer, M.SemiLinear):
+        layer_hash = 0xE303BA24
+        layer_hash += layer.out_features + layer.in_part * 7 + layer.out_part * 3
+      else:
+        raise Exception('Unknown layer type')
       layer_hash ^= prev_hash >> 1
       layer_hash ^= (prev_hash << 31) & 0xFFFFFFFF
       if layer.out_features != 1:
@@ -132,6 +139,10 @@ class NNUEWriter():
     # Stored as [outputs][inputs], so we can flatten
     self.buf.extend(weight.flatten().numpy().tobytes())
 
+  def write_semi_fc_layer(self, layer):
+    for p in layer.children():
+      self.write_fc_layer(p)
+
   def int32(self, v):
     self.buf.extend(struct.pack("<I", v))
 
@@ -146,6 +157,7 @@ class NNUEReader():
     self.read_int32(feature_set.hash ^ (M.L1*2)) # Feature transformer hash
     self.read_feature_transformer(self.model.input)
     self.read_int32(fc_hash) # FC layers hash
+    self.read_semi_fc_layer(self.model.la)
     self.read_fc_layer(self.model.l1)
     self.read_fc_layer(self.model.l2)
     self.read_fc_layer(self.model.output, is_output=True)
@@ -192,6 +204,10 @@ class NNUEReader():
 
     # Strip padding.
     layer.weight.data = layer.weight.data[:non_padded_shape[0], :non_padded_shape[1]]
+
+  def read_semi_fc_layer(self, layer):
+    for p in layer.children():
+      self.read_fc_layer(p)
 
   def read_int32(self, expected=None):
     v = struct.unpack("<I", self.f.read(4))[0]
