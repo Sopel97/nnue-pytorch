@@ -37,10 +37,11 @@ class NNUEWriter():
     self.write_header(model, fc_hash)
     self.int32(model.feature_set.hash ^ (M.L1*2)) # Feature transformer hash
     self.write_feature_transformer(model)
-    self.int32(fc_hash) # FC layers hash
-    self.write_fc_layer(model.l1)
-    self.write_fc_layer(model.l2)
-    self.write_fc_layer(model.output, is_output=True)
+    for l1, l2, output in model.layer_stacks.get_coalesced_layer_stacks():
+      self.int32(fc_hash) # FC layers hash
+      self.write_fc_layer(l1)
+      self.write_fc_layer(l2)
+      self.write_fc_layer(output, is_output=True)
 
   @staticmethod
   def fc_hash(model):
@@ -49,7 +50,7 @@ class NNUEWriter():
     prev_hash ^= (M.L1 * 2)
 
     # Fully connected layers
-    layers = [model.l1, model.l2, model.output]
+    layers = [model.layer_stacks.l1[0], model.layer_stacks.l2[0], model.layer_stacks.output[0]]
     for layer in layers:
       layer_hash = 0xCC03DAE4
       layer_hash += layer.out_features
@@ -90,13 +91,13 @@ class NNUEWriter():
 
     weight = self.coalesce_ft_weights(model, layer)
     weight0 = weight[:M.L1, :]
-    psqtweight0 = weight[M.L1, :]
+    psqtweight0 = weight[M.L1:, :]
     weight = weight0.mul(127).round().to(torch.int16)
     psqtweight = psqtweight0.mul(9600).round().to(torch.int32) # kPonanzaConstant * FV_SCALE = 9600
     ascii_hist('ft weight:', weight.numpy())
     # weights stored as [41024][256], so we need to transpose the pytorch [256][41024]
     self.buf.extend(weight.transpose(0, 1).flatten().numpy().tobytes())
-    self.buf.extend(psqtweight.flatten().numpy().tobytes())
+    self.buf.extend(psqtweight.transpose(0, 1).flatten().numpy().tobytes())
 
   def write_fc_layer(self, layer, is_output=False):
     # FC layers are stored as int8 weights, and int32 biases
@@ -145,10 +146,11 @@ class NNUEReader():
     self.read_header(feature_set, fc_hash)
     self.read_int32(feature_set.hash ^ (M.L1*2)) # Feature transformer hash
     self.read_feature_transformer(self.model.input)
-    self.read_int32(fc_hash) # FC layers hash
-    self.read_fc_layer(self.model.l1)
-    self.read_fc_layer(self.model.l2)
-    self.read_fc_layer(self.model.output, is_output=True)
+    for l1, l2, output in zip(self.model.layer_stacks.l1, self.model.layer_stacks.l2, self.model.layer_stacks.output):
+      self.read_int32(fc_hash) # FC layers hash
+      self.read_fc_layer(l1)
+      self.read_fc_layer(l2)
+      self.read_fc_layer(output, is_output=True)
 
   def read_header(self, feature_set, fc_hash):
     self.read_int32(VERSION) # version
@@ -163,14 +165,14 @@ class NNUEReader():
     return d
 
   def read_feature_transformer(self, layer):
-    bias = self.tensor(numpy.int16, [layer.bias.shape[0]-1]).divide(127.0)
-    layer.bias.data = torch.cat([bias, torch.tensor([0])])
+    bias = self.tensor(numpy.int16, [layer.bias.shape[0]-M.BUCKETS]).divide(127.0)
+    layer.bias.data = torch.cat([bias, torch.tensor([0]*M.BUCKETS)])
     # weights stored as [41024][256], so we need to transpose the pytorch [256][41024]
     shape = layer.weight.shape[::-1]
-    weights = self.tensor(numpy.int16, [shape[0], shape[1]-1])
-    psqtweights = self.tensor(numpy.int32, [1, shape[0]])
+    weights = self.tensor(numpy.int16, [shape[0], shape[1]-M.BUCKETS])
+    psqtweights = self.tensor(numpy.int32, [shape[0], M.BUCKETS])
     weights = weights.divide(127.0).transpose(0, 1)
-    psqtweights = psqtweights.divide(9600.0)
+    psqtweights = psqtweights.divide(9600.0).transpose(0, 1)
     layer.weight.data = torch.cat([weights, psqtweights], dim=0)
 
   def read_fc_layer(self, layer, is_output=False):

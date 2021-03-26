@@ -4,11 +4,70 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 import pytorch_lightning as pl
+import copy
 
 # 3 layer fully connected network
 L1 = 256
 L2 = 32
 L3 = 32
+BUCKETS = 8
+
+class LayerStacks(nn.Module):
+  def __init__(self, count):
+    super(LayerStacks, self).__init__()
+
+    self.l1 = nn.ModuleList([nn.Linear(2 * L1, L2) for i in range(count)])
+    self.l1_fact = nn.Linear(2 * L1, L2, bias=False)
+    self.l2 = nn.ModuleList([nn.Linear(L2, L3) for i in range(count)])
+    self.output = nn.ModuleList([nn.Linear(L3, 1) for i in range(count)])
+
+  def _correct_init_biases(self):
+    l1_fact_weight = self.l1_fact.weight
+    with torch.no_grad():
+      l1_fact_weight.fill_(0.0)
+    self.l1_fact.weight = nn.Parameter(l1_fact_weight)
+    for l1, l2, output in zip(self.l1, self.l2, self.output):
+      l1_bias = l1.bias
+      l2_bias = l2.bias
+      output_bias = output.bias
+      with torch.no_grad():
+        l1_bias.add_(0.5)
+        l2_bias.add_(0.5)
+        output_bias.fill_(0.0)
+      l1.bias = nn.Parameter(l1_bias)
+      l2.bias = nn.Parameter(l2_bias)
+      output.bias = nn.Parameter(output_bias)
+
+  def forward(self, x):
+    l1s_ = [l1(x) for l1 in self.l1]
+    l1f_ = self.l1_fact(x)
+    l1s_ = [torch.clamp(l1 + l1f_, 0.0, 1.0) for l1 in l1s_]
+    l2s_ = [l2(l1_) for l1_, l2 in zip(l1s_, self.l2)]
+    l2s_ = [torch.clamp(l2, 0.0, 1.0) for l2 in l2s_]
+    return torch.stack([output(l2_) for l2_, output in zip(l2s_, self.output)], dim=0).squeeze(dim=2)
+
+  def get_non_output_params(self):
+    for l1, l2, output in zip(self.l1, self.l2, self.output):
+      yield l1.bias
+      yield l1.weight
+      yield l2.bias
+      yield l2.weight
+    yield self.l1_fact.weight
+
+  def get_output_params(self):
+    for l1, l2, output in zip(self.l1, self.l2, self.output):
+      yield output.bias
+      yield output.weight
+
+  def get_coalesced_layer_stacks(self):
+    for l1, l2, output in zip(self.l1, self.l2, self.output):
+      l1_cpy = copy.deepcopy(l1)
+      l1_cpy_weight = l1_cpy.weight
+      with torch.no_grad():
+        l1_cpy_weight += self.l1_fact.weight
+      l1_cpy.weight = nn.Parameter(l1_cpy_weight)
+      yield l1_cpy, l2, output
+
 
 class NNUE(pl.LightningModule):
   """
@@ -21,11 +80,9 @@ class NNUE(pl.LightningModule):
   """
   def __init__(self, feature_set, lambda_=1.0):
     super(NNUE, self).__init__()
-    self.input = nn.Linear(feature_set.num_features, L1 + 1)
+    self.input = nn.Linear(feature_set.num_features, L1 + BUCKETS)
     self.feature_set = feature_set
-    self.l1 = nn.Linear(2 * L1, L2)
-    self.l2 = nn.Linear(L2, L3)
-    self.output = nn.Linear(L3, 1)
+    self.layer_stacks = LayerStacks(BUCKETS)
     self.lambda_ = lambda_
 
     self._zero_virtual_feature_weights()
@@ -54,19 +111,12 @@ class NNUE(pl.LightningModule):
   '''
   def _correct_init_biases(self):
     input_bias = self.input.bias
-    l1_bias = self.l1.bias
-    l2_bias = self.l2.bias
-    output_bias = self.output.bias
     with torch.no_grad():
       input_bias.add_(0.5)
       input_bias[L1] = 0.0
-      l1_bias.add_(0.5)
-      l2_bias.add_(0.5)
-      output_bias.fill_(0.0)
     self.input.bias = nn.Parameter(input_bias)
-    self.l1.bias = nn.Parameter(l1_bias)
-    self.l2.bias = nn.Parameter(l2_bias)
-    self.output.bias = nn.Parameter(output_bias)
+
+    self.layer_stacks._correct_init_biases()
 
   def _init_psqt(self):
     input_weights = self.input.weight
@@ -75,7 +125,8 @@ class NNUE(pl.LightningModule):
     with torch.no_grad():
       initial_values = self.feature_set.get_initial_psqt_features()
       assert len(initial_values) == self.feature_set.num_features
-      input_weights[L1, :] = torch.FloatTensor(initial_values) * scale
+      for i in range(8):
+        input_weights[L1 + i, :] = torch.FloatTensor(initial_values) * scale
     self.input.weight = nn.Parameter(input_weights)
 
   '''
@@ -117,7 +168,7 @@ class NNUE(pl.LightningModule):
     else:
       raise Exception('Cannot change feature set from {} to {}.'.format(self.feature_set.name, new_feature_set.name))
 
-  def forward(self, us, them, w_in, b_in):
+  def forward(self, us, them, w_in, b_in, layer_stack_indices):
     wp = self.input(w_in)
     bp = self.input(b_in)
     w, wpsqt = torch.split(wp, L1, dim=1)
@@ -125,13 +176,17 @@ class NNUE(pl.LightningModule):
     l0_ = (us * torch.cat([w, b], dim=1)) + (them * torch.cat([b, w], dim=1))
     # clamp here is used as a clipped relu to (0.0, 1.0)
     l0_ = torch.clamp(l0_, 0.0, 1.0)
-    l1_ = torch.clamp(self.l1(l0_), 0.0, 1.0)
-    l2_ = torch.clamp(self.l2(l1_), 0.0, 1.0)
-    x = self.output(l2_) + (wpsqt - bpsqt) * (us - 0.5)
+
+    layer_stack_indices_unsq = layer_stack_indices.unsqueeze(dim=1)
+    partial_xs = self.layer_stacks(l0_).t()
+    wpsqt = wpsqt.gather(1, layer_stack_indices_unsq)
+    bpsqt = bpsqt.gather(1, layer_stack_indices_unsq)
+    x = partial_xs.gather(1, layer_stack_indices_unsq) + (wpsqt - bpsqt) * (us - 0.5)
+
     return x
 
   def step_(self, batch, batch_idx, loss_type):
-    us, them, white, black, outcome, score = batch
+    us, them, white, black, outcome, score, layer_stack_indices = batch
 
     # 600 is the kPonanzaConstant scaling factor needed to convert the training net output to a score.
     # This needs to match the value used in the serializer
@@ -139,7 +194,7 @@ class NNUE(pl.LightningModule):
     in_scaling = 410
     out_scaling = 361
 
-    q = self(us, them, white, black) * nnue2score / out_scaling
+    q = self(us, them, white, black, layer_stack_indices) * nnue2score / out_scaling
     t = outcome
     p = (score / in_scaling).sigmoid()
 
@@ -173,8 +228,8 @@ class NNUE(pl.LightningModule):
     LR = 1e-3
     train_params = [
       {'params' : self.get_specific_layers([self.input]), 'lr' : LR, 'min_weight' : -(2**15-1)/127, 'max_weight' : (2**15-1)/127 },
-      {'params' : self.get_specific_layers([self.l1, self.l2]), 'lr' : LR, 'min_weight' : -127/64, 'max_weight' : 127/64 },
-      {'params' : self.get_specific_layers([self.output]), 'lr' : LR / 10, 'min_weight' : -127*127/9600, 'max_weight' : 127*127/9600 },
+      {'params' : list(self.get_non_output_params()), 'lr' : LR, 'min_weight' : -127/64, 'max_weight' : 127/64 },
+      {'params' : list(self.get_output_params()), 'lr' : LR / 10, 'min_weight' : -127*127/9600, 'max_weight' : 127*127/9600 },
     ]
     # increasing the eps leads to less saturated nets with a few dead neurons
     optimizer = ranger.Ranger(train_params, betas=(.9, 0.999), eps=1.0e-7)
@@ -185,6 +240,14 @@ class NNUE(pl.LightningModule):
   def get_specific_layers(self, layers):
     pred = lambda x: x in layers
     return self.get_layers(pred)
+
+  def get_non_output_params(self):
+    for p in self.layer_stacks.get_non_output_params():
+      yield p
+
+  def get_output_params(self):
+    for p in self.layer_stacks.get_output_params():
+      yield p
 
   def get_layers(self, filt):
     """

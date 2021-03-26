@@ -1,6 +1,7 @@
 from collections import OrderedDict
 from feature_block import *
 import torch
+import chess
 
 def _calculate_features_hash(features):
     if len(features) == 1:
@@ -29,6 +30,23 @@ class FeatureSet:
         self.num_real_features = sum(feature.num_real_features for feature in features)
         self.num_virtual_features = sum(feature.num_virtual_features for feature in features)
         self.num_features = sum(feature.num_features for feature in features)
+
+
+    def get_bucket_index(self, board: chess.Board):
+        all_pieces = \
+            board.pieces(chess.PAWN, chess.WHITE) | \
+            board.pieces(chess.KNIGHT, chess.WHITE) | \
+            board.pieces(chess.BISHOP, chess.WHITE) | \
+            board.pieces(chess.ROOK, chess.WHITE) | \
+            board.pieces(chess.QUEEN, chess.WHITE) | \
+            board.pieces(chess.KING, chess.WHITE) | \
+            board.pieces(chess.PAWN, chess.BLACK) | \
+            board.pieces(chess.KNIGHT, chess.BLACK) | \
+            board.pieces(chess.BISHOP, chess.BLACK) | \
+            board.pieces(chess.ROOK, chess.BLACK) | \
+            board.pieces(chess.QUEEN, chess.BLACK) | \
+            board.pieces(chess.KING, chess.BLACK)
+        return (len(all_pieces) - 1) // 4
 
     '''
     This method returns the feature ranges for the virtual factors of the

@@ -15,13 +15,13 @@ def make_data_reader(data_path, feature_set):
     return nnue_bin_dataset.NNUEBinData(data_path, feature_set)
 
 def eval_model(model, item):
-    us, them, white, black, outcome, score = item
+    us, them, white, black, outcome, score, lsindex = item
     us = us.unsqueeze(dim=0)
     them = them.unsqueeze(dim=0)
     white = white.unsqueeze(dim=0)
     black = black.unsqueeze(dim=0)
 
-    eval = model.forward(us, them, white, black).item() * 600.0
+    eval = model.forward(us, them, white, black, lsindex).item() * 600.0
     if them[0] > 0.5:
         return -eval
     else:
