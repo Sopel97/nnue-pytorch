@@ -231,6 +231,323 @@ struct HalfKAFactorized {
     }
 };
 
+struct HalfKAS2v1 {
+    /*
+        2 halfka buckets
+        all KK features are packed into one NUM_SQ * NUM_SQ because
+        they are disjoint
+    */
+
+    static constexpr int NUM_SQ = 64;
+    static constexpr int NUM_PT = 11;
+    static constexpr int NUM_PLANES = (NUM_SQ * NUM_PT);
+    static constexpr int INPUTS = NUM_PLANES * NUM_SQ * 2;
+
+    static constexpr int MAX_ACTIVE_FEATURES = 32;
+
+    static int feature_index(Color color, Square ksq, Square sq, Piece p, Bitboard special)
+    {
+        auto p_idx = static_cast<int>(p.type()) * 2 + (p.color() != color);
+        if (p_idx == 11)
+            --p_idx; // pack the opposite king into the same NUM_SQ * NUM_SQ
+        auto special_offset = special.isSet(sq) * (INPUTS / 2);
+        auto oriented_sq = static_cast<int>(orient_flip(color, sq));
+        return oriented_sq + p_idx * NUM_SQ + static_cast<int>(ksq) * NUM_PLANES + special_offset;
+    }
+
+    static Bitboard get_special_pawns(const Position& pos) {
+        static const EnumArray<Square, Bitboard> forward_white = [](){
+            EnumArray<Square, Bitboard> arr;
+            for (Square s : values<Square>())
+            {
+                Bitboard bb{};
+                for (int i = 1; i <= 6; ++i)
+                {
+                    bb |= Bitboard::square(s).shifted(Offset{0, i});
+                }
+                arr[s] = bb;
+            }
+            return arr;
+        }();
+
+        static const EnumArray<Square, Bitboard> forward_black = [](){
+            EnumArray<Square, Bitboard> arr;
+            for (Square s : values<Square>())
+            {
+                Bitboard bb{};
+                for (int i = 1; i <= 6; ++i)
+                {
+                    bb |= Bitboard::square(s).shifted(Offset{0, -i});
+                }
+                arr[s] = bb;
+            }
+            return arr;
+        }();
+
+        static const EnumArray<Square, Bitboard> forward_span_white = [](){
+            EnumArray<Square, Bitboard> arr;
+            for (Square s : values<Square>())
+            {
+                Bitboard bb = forward_white[s];
+                bb |= bb.shifted(Offset{1, 0});
+                bb |= bb.shifted(Offset{-1, 0});
+                arr[s] = bb;
+            }
+            return arr;
+        }();
+
+        static const EnumArray<Square, Bitboard> forward_span_black = [](){
+            EnumArray<Square, Bitboard> arr;
+            for (Square s : values<Square>())
+            {
+                Bitboard bb = forward_black[s];
+                bb |= bb.shifted(Offset{1, 0});
+                bb |= bb.shifted(Offset{-1, 0});
+                arr[s] = bb;
+            }
+            return arr;
+        }();
+
+        const Bitboard white_pawns = pos.piecesBB(Piece(PieceType::Pawn, Color::White));
+        const Bitboard black_pawns = pos.piecesBB(Piece(PieceType::Pawn, Color::Black));
+        const Bitboard all_pawns = white_pawns | black_pawns;
+        Bitboard special{};
+
+        for (Square sq : white_pawns)
+        {
+            if (
+                !((forward_white[sq] & all_pawns).any()
+                  || (forward_span_white[sq] & black_pawns).any()))
+            {
+                special |= sq;
+            }
+        }
+
+        for (Square sq : black_pawns)
+        {
+            if (
+                !((forward_black[sq] & all_pawns).any()
+                  || (forward_span_black[sq] & white_pawns).any()))
+            {
+                special |= sq;
+            }
+        }
+
+        return special;
+    }
+
+    static Bitboard get_outpost_squares(const Position& pos)
+    {
+        const Bitboard white_pawns = pos.piecesBB(Piece(PieceType::Pawn, Color::White));
+        const Bitboard black_pawns = pos.piecesBB(Piece(PieceType::Pawn, Color::Black));
+        const Bitboard white_pawn_attacks = bb::pawnAttacks(white_pawns, Color::White);
+        const Bitboard black_pawn_attacks = bb::pawnAttacks(black_pawns, Color::Black);
+
+        const Bitboard outposts = ((white_pawn_attacks | white_pawns.shifted<0, -1>()) & ~black_pawn_attacks)
+                                  | ((black_pawn_attacks | black_pawns.shifted<0, 1>()) & ~white_pawn_attacks);
+        return outposts;
+    }
+
+    static Bitboard get_special_rooks(const Position& pos, Bitboard special_pawns)
+    {
+        const Bitboard white_pawns = pos.piecesBB(Piece(PieceType::Pawn, Color::White));
+        const Bitboard black_pawns = pos.piecesBB(Piece(PieceType::Pawn, Color::Black));
+        const Bitboard non_special_pawns = (white_pawns | black_pawns) & ~special_pawns;
+        const Bitboard white_rooks = pos.piecesBB(Piece(PieceType::Rook, Color::White));
+        const Bitboard black_rooks = pos.piecesBB(Piece(PieceType::Rook, Color::Black));
+        const Bitboard occupied = pos.piecesBB();
+        Bitboard special{};
+        for (Square sq : white_rooks)
+        {
+            const auto filebb = Bitboard::file(sq.file());
+            if (!((non_special_pawns & filebb).any())
+                || (bb::fancy_magics::rookAttacks(sq, occupied) & white_rooks).any())
+            {
+                special |= sq;
+            }
+        }
+        for (Square sq : black_rooks)
+        {
+            const auto filebb = Bitboard::file(sq.file());
+            if (!((non_special_pawns & filebb).any())
+                || (bb::fancy_magics::rookAttacks(sq, occupied) & black_rooks).any())
+            {
+                special |= sq;
+            }
+        }
+        return special;
+    }
+
+    static Bitboard get_special_queens(const Position& pos)
+    {
+        const Bitboard white_queens = pos.piecesBB(Piece(PieceType::Queen, Color::White));
+        const Bitboard black_queens = pos.piecesBB(Piece(PieceType::Queen, Color::Black));
+        if (white_queens.count() != black_queens.count())
+        {
+            return white_queens | black_queens;
+        }
+        else
+        {
+            return Bitboard{};
+        }
+    }
+
+    static Bitboard get_special_kings(const Position& pos)
+    {
+        static const EnumArray<Square, Bitboard> forward_white = [](){
+            EnumArray<Square, Bitboard> arr;
+            for (Square s : values<Square>())
+            {
+                Bitboard bb = Bitboard::square(s);
+                for (int i = 1; i <= 3; ++i)
+                {
+                    bb |= bb.shifted(Offset{0, 1});
+                }
+                arr[s] = bb | bb.shifted<-1, 0>() | bb.shifted<1, 0>();
+            }
+            return arr;
+        }();
+
+        static const EnumArray<Square, Bitboard> forward_black = [](){
+            EnumArray<Square, Bitboard> arr;
+            for (Square s : values<Square>())
+            {
+                Bitboard bb = Bitboard::square(s);
+                for (int i = 1; i <= 3; ++i)
+                {
+                    bb |= bb.shifted(Offset{0, -1});
+                }
+                arr[s] = bb | bb.shifted<-1, 0>() | bb.shifted<1, 0>();
+            }
+            return arr;
+        }();
+
+        const Bitboard white_pawns = pos.piecesBB(Piece(PieceType::Pawn, Color::White));
+        const Bitboard black_pawns = pos.piecesBB(Piece(PieceType::Pawn, Color::Black));
+        const Square king_white = pos.kingSquare(Color::White);
+        const Square king_black = pos.kingSquare(Color::Black);
+
+        Bitboard special{};
+        if ((forward_white[king_white] & white_pawns).count() >= 3)
+            special |= king_white;
+        if ((forward_black[king_black] & black_pawns).count() >= 3)
+            special |= king_black;
+        return special;
+    }
+
+    static Bitboard get_special_squares(const Position& pos)
+    {
+        /*
+            Squares are considered special if the piece on the square is special.
+            Special may also mean worse than normal, this is just a bucketing scheme.
+
+            Pawns:
+                - passed
+                    - no other pawn in front of the pawn
+                    - no opponent pawns in front sides of the pawn
+
+            Bishops & Bishops:
+                - outpost
+                    - defended by pawn and not attacked by pawn
+                    - behind pawn of the same color and not attacked by pawn
+
+            Rooks:
+                - connected rooks
+                - semiopen file
+                - attacks/defends special pawn
+
+            Queens:
+                - queen imbalance
+                    - one side has more queens than the other
+
+            Kings:
+                - safe king
+                    - at least 3 pawns of the same color in the frontmost (span) of 9 squares and to the sides
+        */
+
+        Bitboard special{};
+        const Bitboard special_pawns = get_special_pawns(pos);
+        special |= special_pawns;
+        special |= get_outpost_squares(pos) & (pos.piecesBB(Piece(PieceType::Bishop, Color::White))
+                                               | pos.piecesBB(Piece(PieceType::Bishop, Color::Black))
+                                               | pos.piecesBB(Piece(PieceType::Knight, Color::White))
+                                               | pos.piecesBB(Piece(PieceType::Knight, Color::Black)));
+        special |= get_special_rooks(pos, special_pawns);
+        special |= get_special_queens(pos);
+        special |= get_special_kings(pos);
+
+        return special;
+    }
+
+    static int fill_features_sparse(int i, const TrainingDataEntry& e, int* features, float* values, int& counter, Color color)
+    {
+        auto& pos = e.pos;
+        auto pieces = pos.piecesBB();
+        auto ksq = pos.kingSquare(color);
+        auto special = get_special_squares(pos);
+
+        // We order the features so that the resulting sparse
+        // tensor is coalesced.
+        int features_unordered[32];
+        int j = 0;
+        for(Square sq : pieces)
+        {
+            auto p = pos.pieceAt(sq);
+            features_unordered[j++] = feature_index(color, orient_flip(color, ksq), sq, p, special);
+        }
+        std::sort(features_unordered, features_unordered + j);
+        for (int k = 0; k < j; ++k)
+        {
+            int idx = counter * 2;
+            features[idx] = i;
+            features[idx + 1] = features_unordered[k];
+            values[counter] = 1.0f;
+            counter += 1;
+        }
+        return INPUTS;
+    }
+};
+
+struct HalfKAS2v1Factorized {
+    // Factorized features
+    static constexpr int NUM_PT_VIRTUAL = 12;
+    static constexpr int PIECE_INPUTS = HalfKAS2v1::NUM_SQ * NUM_PT_VIRTUAL;
+    static constexpr int INPUTS = HalfKAS2v1::INPUTS + PIECE_INPUTS;
+
+    static constexpr int MAX_PIECE_FEATURES = 32;
+    static constexpr int MAX_ACTIVE_FEATURES = HalfKAS2v1::MAX_ACTIVE_FEATURES + MAX_PIECE_FEATURES;
+
+    static void fill_features_sparse(int i, const TrainingDataEntry& e, int* features, float* values, int& counter, Color color)
+    {
+        auto counter_before = counter;
+        int offset = HalfKAS2v1::fill_features_sparse(i, e, features, values, counter, color);
+        auto& pos = e.pos;
+        auto pieces = pos.piecesBB();
+
+        // We order the features so that the resulting sparse
+        // tensor is coalesced. Note that we can just sort
+        // the parts where values are all 1.0f and leave the
+        // halfk feature where it was.
+        int features_unordered[32];
+        int j = 0;
+        for(Square sq : pieces)
+        {
+            auto p = pos.pieceAt(sq);
+            auto p_idx = static_cast<int>(p.type()) * 2 + (p.color() != color);
+            features_unordered[j++] = offset + (p_idx * HalfKAS2v1::NUM_SQ) + static_cast<int>(orient_flip(color, sq));
+        }
+        std::sort(features_unordered, features_unordered + j);
+        for (int k = 0; k < j; ++k)
+        {
+            int idx = counter * 2;
+            features[idx] = i;
+            features[idx + 1] = features_unordered[k];
+            values[counter] = 1.0f;
+            counter += 1;
+        }
+    }
+};
+
 template <typename T, typename... Ts>
 struct FeatureSet
 {
@@ -540,6 +857,14 @@ extern "C" {
         else if (feature_set == "HalfKA^")
         {
             return new FeaturedBatchStream<FeatureSet<HalfKAFactorized>, SparseBatch>(concurrency, filename, batch_size, cyclic, skipPredicate);
+        }
+        else if (feature_set == "HalfKAS2v1")
+        {
+            return new FeaturedBatchStream<FeatureSet<HalfKAS2v1>, SparseBatch>(concurrency, filename, batch_size, cyclic, skipPredicate);
+        }
+        else if (feature_set == "HalfKAS2v1^")
+        {
+            return new FeaturedBatchStream<FeatureSet<HalfKAS2v1Factorized>, SparseBatch>(concurrency, filename, batch_size, cyclic, skipPredicate);
         }
         fprintf(stderr, "Unknown feature_set %s\n", feature_set_c);
         return nullptr;

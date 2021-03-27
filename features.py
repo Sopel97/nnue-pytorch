@@ -11,8 +11,9 @@ of feature block classes in that module.
 '''
 import halfkp
 import halfka
+import halfkas2v1
 
-_feature_modules = [halfkp, halfka]
+_feature_modules = [halfkp, halfka, halfkas2v1]
 
 _feature_blocks_by_name = dict()
 
