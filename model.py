@@ -27,6 +27,7 @@ class NNUE(pl.LightningModule):
     self.l2 = nn.Linear(L2, L3)
     self.output = nn.Linear(L3, 1)
     self.lambda_ = lambda_
+    self.LR = 1e-3
 
     self._zero_virtual_feature_weights()
     self._correct_init_biases()
@@ -88,8 +89,8 @@ class NNUE(pl.LightningModule):
 
     # TODO: Implement this for more complicated conversions.
     #       Currently we support only a single feature block.
-    if len(self.feature_set.features) > 1:
-      raise Exception('Cannot change feature set from {} to {}.'.format(self.feature_set.name, new_feature_set.name))
+    if len(self.feature_set.features) > 1 and len(new_feature_set.features) > 1:
+      raise Exception('Error 1: Cannot change feature set from {} to {}.'.format(self.feature_set.name, new_feature_set.name))
 
     # Currently we only support conversion for feature sets with
     # one feature block each so we'll dig the feature blocks directly
@@ -114,8 +115,13 @@ class NNUE(pl.LightningModule):
       weights = torch.cat([weights, padding], dim=1)
       self.input.weight = nn.Parameter(weights)
       self.feature_set = new_feature_set
+    elif new_feature_block.name == next(iter(old_feature_block.factors)) and new_feature_block.num_real_features == old_feature_block.num_real_features:
+      # factorized -> unfactorized
+      weights = self.input.weight[:, :new_feature_block.num_real_features]
+      self.input.weight = nn.Parameter(weights)
+      self.feature_set = new_feature_set
     else:
-      raise Exception('Cannot change feature set from {} to {}.'.format(self.feature_set.name, new_feature_set.name))
+      raise Exception('Error 2: Cannot change feature set from {} to {}.'.format(self.feature_set.name, new_feature_set.name))
 
   def forward(self, us, them, w_in, b_in):
     wp = self.input(w_in)
@@ -168,13 +174,15 @@ class NNUE(pl.LightningModule):
   def test_step(self, batch, batch_idx):
     self.step_(batch, batch_idx, 'test_loss')
 
+  def set_lr(self, lr):
+    self.LR = lr
+
   def configure_optimizers(self):
     # Train with a lower LR on the output layer
-    LR = 1e-3
     train_params = [
-      {'params' : self.get_specific_layers([self.input]), 'lr' : LR, 'min_weight' : -(2**15-1)/127, 'max_weight' : (2**15-1)/127 },
-      {'params' : self.get_specific_layers([self.l1, self.l2]), 'lr' : LR, 'min_weight' : -127/64, 'max_weight' : 127/64 },
-      {'params' : self.get_specific_layers([self.output]), 'lr' : LR / 10, 'min_weight' : -127*127/9600, 'max_weight' : 127*127/9600 },
+      {'params' : self.get_specific_layers([self.input]), 'lr' : self.LR, 'min_weight' : -(2**15-1)/127, 'max_weight' : (2**15-1)/127 },
+      {'params' : self.get_specific_layers([self.l1, self.l2]), 'lr' : self.LR, 'min_weight' : -127/64, 'max_weight' : 127/64 },
+      {'params' : self.get_specific_layers([self.output]), 'lr' : self.LR / 10, 'min_weight' : -127*127/9600, 'max_weight' : 127*127/9600 },
     ]
     # increasing the eps leads to less saturated nets with a few dead neurons
     optimizer = ranger.Ranger(train_params, betas=(.9, 0.999), eps=1.0e-7)
