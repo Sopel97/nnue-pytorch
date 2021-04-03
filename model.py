@@ -10,63 +10,93 @@ import copy
 L1 = 256
 L2 = 32
 L3 = 32
-BUCKETS = 8
+PSQT_BUCKETS = 8
+LS_BUCKETS = 64
 
 class LayerStacks(nn.Module):
   def __init__(self, count):
     super(LayerStacks, self).__init__()
 
-    self.l1 = nn.ModuleList([nn.Linear(2 * L1, L2) for i in range(count)])
+    self.count = count
+    self.l1 = nn.Linear(2 * L1, L2 * count)
     self.l1_fact = nn.Linear(2 * L1, L2, bias=False)
-    self.l2 = nn.ModuleList([nn.Linear(L2, L3) for i in range(count)])
-    self.output = nn.ModuleList([nn.Linear(L3, 1) for i in range(count)])
+    self.l2 = nn.Linear(L2, L3 * count)
+    self.l2_fact = nn.Linear(L2, L3, bias=False)
+    self.output = nn.Linear(L3, 1 * count)
+    self.output_fact = nn.Linear(L3, 1, bias=False)
+
+    self.idx_offset = None
 
   def _correct_init_biases(self):
     l1_fact_weight = self.l1_fact.weight
+    l2_fact_weight = self.l2_fact.weight
+    output_fact_weight = self.output_fact.weight
     with torch.no_grad():
       l1_fact_weight.fill_(0.0)
+      l2_fact_weight.fill_(0.0)
+      output_fact_weight.fill_(0.0)
     self.l1_fact.weight = nn.Parameter(l1_fact_weight)
-    for l1, l2, output in zip(self.l1, self.l2, self.output):
-      l1_bias = l1.bias
-      l2_bias = l2.bias
-      output_bias = output.bias
-      with torch.no_grad():
-        l1_bias.add_(0.5)
-        l2_bias.add_(0.5)
-        output_bias.fill_(0.0)
-      l1.bias = nn.Parameter(l1_bias)
-      l2.bias = nn.Parameter(l2_bias)
-      output.bias = nn.Parameter(output_bias)
+    self.l2_fact.weight = nn.Parameter(l2_fact_weight)
+    self.output_fact.weight = nn.Parameter(output_fact_weight)
+    l1_bias = self.l1.bias
+    l2_bias = self.l2.bias
+    output_bias = self.output.bias
+    with torch.no_grad():
+      l1_bias.add_(0.5)
+      l2_bias.add_(0.5)
+      output_bias.fill_(0.0)
+    self.l1.bias = nn.Parameter(l1_bias)
+    self.l2.bias = nn.Parameter(l2_bias)
+    self.output.bias = nn.Parameter(output_bias)
 
-  def forward(self, x):
-    l1s_ = [l1(x) for l1 in self.l1]
+  def forward(self, x, ls_indices):
+    if self.idx_offset == None or self.idx_offset.shape[0] != x.shape[0]:
+      self.idx_offset = torch.arange(0,x.shape[0]*self.count,self.count, device=ls_indices.device)
+
+    l1s_ = self.l1(x).reshape((-1, self.count, L2))
     l1f_ = self.l1_fact(x)
-    l1s_ = [torch.clamp(l1 + l1f_, 0.0, 1.0) for l1 in l1s_]
-    l2s_ = [l2(l1_) for l1_, l2 in zip(l1s_, self.l2)]
-    l2s_ = [torch.clamp(l2, 0.0, 1.0) for l2 in l2s_]
-    return torch.stack([output(l2_) for l2_, output in zip(l2s_, self.output)], dim=0).squeeze(dim=2)
+    # https://stackoverflow.com/questions/55881002/pytorch-tensor-indexing-how-to-gather-rows-by-tensor-containing-indices
+    l1c_ = l1s_.view(-1, L2)[ls_indices.flatten() + self.idx_offset]
+    l1x_ = torch.clamp(l1c_ + l1f_, 0.0, 1.0)
+
+    l2s_ = self.l2(l1x_).reshape((-1, self.count, L3))
+    l2f_ = self.l2_fact(l1x_)
+    l2c_ = l2s_.view(-1, L3)[ls_indices.flatten() + self.idx_offset]
+    l2x_ = torch.clamp(l2c_ + l2f_, 0.0, 1.0)
+
+    l3s_ = self.output(l2x_).reshape((-1, self.count, 1))
+    l3f_ = self.output_fact(l2x_)
+    l3c_ = l3s_.view(-1, 1)[ls_indices.flatten() + self.idx_offset]
+    l3x_ = l3c_ + l3f_
+
+    return l3x_
 
   def get_non_output_params(self):
-    for l1, l2, output in zip(self.l1, self.l2, self.output):
-      yield l1.bias
-      yield l1.weight
-      yield l2.bias
-      yield l2.weight
+    yield self.l1.bias
+    yield self.l1.weight
     yield self.l1_fact.weight
+    yield self.l2.bias
+    yield self.l2.weight
+    yield self.l2_fact.weight
 
   def get_output_params(self):
-    for l1, l2, output in zip(self.l1, self.l2, self.output):
-      yield output.bias
-      yield output.weight
+    yield self.output.bias
+    yield self.output.weight
+    yield self.output_fact.weight
 
   def get_coalesced_layer_stacks(self):
-    for l1, l2, output in zip(self.l1, self.l2, self.output):
-      l1_cpy = copy.deepcopy(l1)
-      l1_cpy_weight = l1_cpy.weight
+    for i in range(self.count):
       with torch.no_grad():
-        l1_cpy_weight += self.l1_fact.weight
-      l1_cpy.weight = nn.Parameter(l1_cpy_weight)
-      yield l1_cpy, l2, output
+        l1 = nn.Linear(2*L1, L2)
+        l2 = nn.Linear(L2, L3)
+        output = nn.Linear(L3, 1)
+        l1.weight.data = self.l1.weight[i*L2:(i+1)*L2, :] + self.l1_fact.weight.data
+        l1.bias.data = self.l1.bias[i*L2:(i+1)*L2]
+        l2.weight.data = self.l2.weight[i*L3:(i+1)*L3, :] + self.l2_fact.weight.data
+        l2.bias.data = self.l2.bias[i*L3:(i+1)*L3]
+        output.weight.data = self.output.weight[i:(i+1), :] + self.output_fact.weight.data
+        output.bias.data = self.output.bias[i:(i+1)]
+        yield l1, l2, output
 
 
 class NNUE(pl.LightningModule):
@@ -80,9 +110,9 @@ class NNUE(pl.LightningModule):
   """
   def __init__(self, feature_set, lambda_=1.0):
     super(NNUE, self).__init__()
-    self.input = nn.Linear(feature_set.num_features, L1 + BUCKETS)
+    self.input = nn.Linear(feature_set.num_features, L1 + PSQT_BUCKETS)
     self.feature_set = feature_set
-    self.layer_stacks = LayerStacks(BUCKETS)
+    self.layer_stacks = LayerStacks(LS_BUCKETS)
     self.lambda_ = lambda_
 
     self._zero_virtual_feature_weights()
@@ -168,7 +198,7 @@ class NNUE(pl.LightningModule):
     else:
       raise Exception('Cannot change feature set from {} to {}.'.format(self.feature_set.name, new_feature_set.name))
 
-  def forward(self, us, them, w_in, b_in, layer_stack_indices):
+  def forward(self, us, them, w_in, b_in, psqt_indices, layer_stack_indices):
     wp = self.input(w_in)
     bp = self.input(b_in)
     w, wpsqt = torch.split(wp, L1, dim=1)
@@ -177,16 +207,15 @@ class NNUE(pl.LightningModule):
     # clamp here is used as a clipped relu to (0.0, 1.0)
     l0_ = torch.clamp(l0_, 0.0, 1.0)
 
-    layer_stack_indices_unsq = layer_stack_indices.unsqueeze(dim=1)
-    partial_xs = self.layer_stacks(l0_).t()
-    wpsqt = wpsqt.gather(1, layer_stack_indices_unsq)
-    bpsqt = bpsqt.gather(1, layer_stack_indices_unsq)
-    x = partial_xs.gather(1, layer_stack_indices_unsq) + (wpsqt - bpsqt) * (us - 0.5)
+    psqt_indices_unsq = psqt_indices.unsqueeze(dim=1)
+    wpsqt = wpsqt.gather(1, psqt_indices_unsq)
+    bpsqt = bpsqt.gather(1, psqt_indices_unsq)
+    x = self.layer_stacks(l0_, layer_stack_indices) + (wpsqt - bpsqt) * (us - 0.5)
 
     return x
 
   def step_(self, batch, batch_idx, loss_type):
-    us, them, white, black, outcome, score, layer_stack_indices = batch
+    us, them, white, black, outcome, score, psqt_indices, layer_stack_indices = batch
 
     # 600 is the kPonanzaConstant scaling factor needed to convert the training net output to a score.
     # This needs to match the value used in the serializer
@@ -194,7 +223,7 @@ class NNUE(pl.LightningModule):
     in_scaling = 410
     out_scaling = 361
 
-    q = self(us, them, white, black, layer_stack_indices) * nnue2score / out_scaling
+    q = self(us, them, white, black, psqt_indices, layer_stack_indices) * nnue2score / out_scaling
     t = outcome
     p = (score / in_scaling).sigmoid()
 

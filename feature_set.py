@@ -31,8 +31,13 @@ class FeatureSet:
         self.num_virtual_features = sum(feature.num_virtual_features for feature in features)
         self.num_features = sum(feature.num_features for feature in features)
 
+    def get_ls_index(self, board: chess.Board):
+        king = int(board.pieces(chess.KING, board.turn).pop())
+        if board.turn == chess.BLACK:
+            king ^= 56
+        return king
 
-    def get_bucket_index(self, board: chess.Board):
+    def get_psqt_index(self, board: chess.Board):
         all_pieces = \
             board.pieces(chess.PAWN, chess.WHITE) | \
             board.pieces(chess.KNIGHT, chess.WHITE) | \

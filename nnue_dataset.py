@@ -26,6 +26,7 @@ class SparseBatch(ctypes.Structure):
         ('black', ctypes.POINTER(ctypes.c_int)),
         ('white_values', ctypes.POINTER(ctypes.c_float)),
         ('black_values', ctypes.POINTER(ctypes.c_float)),
+        ('psqt_indices', ctypes.POINTER(ctypes.c_int)),
         ('layer_stack_indices', ctypes.POINTER(ctypes.c_int)),
     ]
 
@@ -42,8 +43,9 @@ class SparseBatch(ctypes.Structure):
         black = torch._sparse_coo_tensor_unsafe(ib, black_values, (self.size, self.num_inputs))
         white._coalesced_(True)
         black._coalesced_(True)
+        psqt_indices = torch.from_numpy(np.ctypeslib.as_array(self.psqt_indices, shape=(self.size,))).long().pin_memory().to(device=device, non_blocking=True)
         layer_stack_indices = torch.from_numpy(np.ctypeslib.as_array(self.layer_stack_indices, shape=(self.size,))).long().pin_memory().to(device=device, non_blocking=True)
-        return us, them, white, black, outcome, score, layer_stack_indices
+        return us, them, white, black, outcome, score, psqt_indices, layer_stack_indices
 
 SparseBatchPtr = ctypes.POINTER(SparseBatch)
 
