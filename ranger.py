@@ -25,6 +25,7 @@
 
 import math
 import torch
+import copy
 from torch.optim.optimizer import Optimizer, required
 
 
@@ -39,6 +40,27 @@ def centralized_gradient(x, use_gc=True, gc_conv_only=False):
                 x.add_(-x.mean(dim=tuple(range(1, len(list(x.size())))), keepdim=True))
     return x
 
+class WeightPruningSpec:
+    def __init__(self, min_step=100000000//16384*10, max_step=100000000//16384*60,
+                 block_width=32, target_nnz_blocks_per_stripe=1, stripe_dim=1,
+                 on_first_pruning_step=None, substripes=1):
+        self.min_step = min_step
+        self.max_step = max_step
+        self.block_width = block_width
+        self.target_nnz_blocks_per_stripe = target_nnz_blocks_per_stripe
+        self.stripe_dim = stripe_dim
+        self.on_first_pruning_step = on_first_pruning_step
+        self.substripes = substripes
+
+        self.current_stripe = None
+        self.next_step_at = None
+        self.target_zero_blocks_per_stripe = None
+        self.zero_blocks_by_stripe = None
+        self.mask = None
+        self.num_zero_blocks = 0
+        self.num_stripes = None
+        self.blocks_per_stripe = None
+        self.blocks_per_substripe = None
 
 class Ranger(Optimizer):
 
@@ -68,7 +90,7 @@ class Ranger(Optimizer):
         # prep defaults and init torch.optim base
         defaults = dict(lr=lr, alpha=alpha, k=k, step_counter=0, betas=betas,
                         N_sma_threshhold=N_sma_threshhold, eps=eps, weight_decay=weight_decay,
-                        min_weight=min_weight, max_weight=max_weight, virtual_params=None)
+                        min_weight=min_weight, max_weight=max_weight, virtual_params=None, weight_pruning=None)
         super().__init__(params, defaults)
 
         # adjustable threshold
@@ -99,6 +121,62 @@ class Ranger(Optimizer):
     def __setstate__(self, state):
         print("set state called")
         super(Ranger, self).__setstate__(state)
+
+    # IMPORTANT: MUST BE CALLED ONE BY ONE BLOCK! THAT IS NUM_ZERO_BLOCKS MUST NOT SKIP ANY VALuE.
+    def update_mask_in_place(self, wp, weight, stripe):
+        num_zero_blocks = wp.zero_blocks_by_stripe[stripe]
+        block_width = wp.block_width
+        blocks_per_substripe = wp.blocks_per_substripe
+        stripe_dim = wp.stripe_dim
+        mask = wp.mask
+
+        if num_zero_blocks == 0:
+            return
+
+        substripe = num_zero_blocks % wp.substripes
+
+        if stripe_dim == 1:
+            blocks = weight[stripe,:].view(-1, block_width)
+            blocks_l1_norms = [(i, norm.item()) for i, norm in enumerate(blocks.abs().sum(dim=1)) if i // blocks_per_substripe == substripe]
+            blocks_l1_norms.sort(key=lambda x:x[1])
+            for block_idx, norm in blocks_l1_norms[:num_zero_blocks]:
+                mask[stripe, block_idx*block_width:block_idx*block_width+block_width].fill_(0.0)
+        elif stripe_dim == 0:
+            blocks = weight[:,stripe].view(-1, block_width)
+            blocks_l1_norms = [(i, norm.item()) for i, norm in enumerate(blocks.abs().sum(dim=1)) if i // blocks_per_substripe == substripe]
+            blocks_l1_norms.sort(key=lambda x:x[1])
+            for block_idx, norm in blocks_l1_norms[:num_zero_blocks]:
+                mask[block_idx*block_width:block_idx*block_width+block_width, stripe].fill_(0.0)
+        else:
+            raise Exception('Invalid stripe_dim {}'.format(stripe_dim))
+
+    def update_mask(self, weight, wp, step):
+        while step >= wp.next_step_at:
+            if wp.on_first_pruning_step is not None:
+                additional_mask = wp.on_first_pruning_step()
+                if additional_mask is not None:
+                    wp.mask.mul_(additional_mask)
+                wp.on_first_pruning_step = None
+
+            if wp.zero_blocks_by_stripe[wp.current_stripe] >= wp.target_zero_blocks_per_stripe:
+                break
+
+            changed_stripe = wp.current_stripe
+            wp.zero_blocks_by_stripe[wp.current_stripe] += 1
+            wp.current_stripe += 1
+            wp.num_zero_blocks += 1
+            if wp.current_stripe >= wp.num_stripes:
+                wp.current_stripe = 0
+
+            # interpolate next step based on the current + 1 number of zero blocks
+            wp.next_step_at = int(round(wp.min_step + (wp.max_step - wp.min_step) * \
+                ((wp.num_zero_blocks + 1) / (wp.target_zero_blocks_per_stripe * len(wp.zero_blocks_by_stripe)))))
+
+            self.update_mask_in_place(wp, weight, changed_stripe)
+
+    def do_weight_pruning_step(self, weight, wp, step):
+        self.update_mask(weight, wp, step)
+        weight.mul_(wp.mask)
 
     def step(self, closure=None):
         loss = None
@@ -133,7 +211,17 @@ class Ranger(Optimizer):
                     # look ahead weight storage now in state dict
                     state['slow_buffer'] = torch.empty_like(p.data)
                     state['slow_buffer'].copy_(p.data)
-
+                    if len(p_data_fp32.shape) == 2 and group['weight_pruning'] is not None:
+                        state['weight_pruning'] = copy.deepcopy(group['weight_pruning'])
+                        wp = state['weight_pruning']
+                        wp.current_stripe = 0
+                        wp.next_step_at = wp.min_step
+                        wp.blocks_per_stripe = p_data_fp32.shape[wp.stripe_dim] // wp.block_width
+                        wp.blocks_per_substripe = wp.blocks_per_stripe // wp.substripes
+                        wp.num_stripes = p_data_fp32.shape[1-wp.stripe_dim]
+                        wp.target_zero_blocks_per_stripe = wp.blocks_per_stripe - wp.target_nnz_blocks_per_stripe
+                        wp.zero_blocks_by_stripe = [0] * wp.num_stripes
+                        wp.mask = torch.ones_like(p_data_fp32)
                 else:
                     state['exp_avg'] = state['exp_avg'].type_as(p_data_fp32)
                     state['exp_avg_sq'] = state['exp_avg_sq'].type_as(
@@ -214,6 +302,9 @@ class Ranger(Optimizer):
                             p_data_fp32.clamp_(min_weight, max_weight)
                         else:
                             raise Exception('Not supported.')
+
+                if 'weight_pruning' in state and len(p_data_fp32.shape) == 2:
+                    self.do_weight_pruning_step(p_data_fp32, state['weight_pruning'], state['step'])
 
                 p.data.copy_(p_data_fp32)
 
