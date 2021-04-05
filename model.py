@@ -6,9 +6,9 @@ import torch.nn.functional as F
 import pytorch_lightning as pl
 
 # 3 layer fully connected network
-L1 = 256
-L2 = 32
-L3 = 32
+L1 = 512
+L2 = 128
+L3 = 64
 
 class NNUE(pl.LightningModule):
   """
@@ -170,10 +170,15 @@ class NNUE(pl.LightningModule):
 
   def configure_optimizers(self):
     # Train with a lower LR on the output layer
+    prune_min_step = 100000000//16384*10
+    prune_max_step = 100000000//16384*60
+    prune_spec_l1 = ranger.WeightPruningSpec(block_width=32, target_density=1/8, min_step=prune_min_step, max_step=prune_max_step)
+    prune_spec_l2 = ranger.WeightPruningSpec(block_width=32, target_density=1/4, min_step=prune_min_step, max_step=prune_max_step)
     LR = 1e-3
     train_params = [
       {'params' : self.get_specific_layers([self.input]), 'lr' : LR, 'min_weight' : -(2**15-1)/127, 'max_weight' : (2**15-1)/127 },
-      {'params' : self.get_specific_layers([self.l1, self.l2]), 'lr' : LR, 'min_weight' : -127/64, 'max_weight' : 127/64 },
+      {'params' : self.get_specific_layers([self.l1]), 'lr' : LR, 'min_weight' : -127/64, 'max_weight' : 127/64, 'weight_pruning' : prune_spec_l1 },
+      {'params' : self.get_specific_layers([self.l2]), 'lr' : LR, 'min_weight' : -127/64, 'max_weight' : 127/64, 'weight_pruning' : prune_spec_l2 },
       {'params' : self.get_specific_layers([self.output]), 'lr' : LR / 10, 'min_weight' : -127*127/9600, 'max_weight' : 127*127/9600 },
     ]
     # increasing the eps leads to less saturated nets with a few dead neurons
