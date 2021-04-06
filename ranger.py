@@ -129,6 +129,7 @@ class Ranger(Optimizer):
         return new_mask
 
     def update_mask(self, weight, wp, step):
+        any_change = False
         while step >= wp.next_step_at:
             if wp.zero_blocks_by_row[wp.current_row] >= wp.target_zero_blocks_per_row:
                 break
@@ -142,7 +143,10 @@ class Ranger(Optimizer):
             wp.next_step_at = int(round(wp.min_step + (wp.max_step - wp.min_step) * \
                 ((sum(wp.zero_blocks_by_row) + 1) / (wp.target_zero_blocks_per_row * len(wp.zero_blocks_by_row)))))
 
-        wp.mask = self.get_new_mask(weight, wp.block_width, wp.zero_blocks_by_row)
+            any_change = True
+
+        if any_change:
+            wp.mask = self.get_new_mask(weight, wp.block_width, wp.zero_blocks_by_row)
 
     def do_weight_pruning_step(self, weight, wp, step):
         self.update_mask(weight, wp, step)
