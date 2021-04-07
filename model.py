@@ -21,7 +21,8 @@ class NNUE(pl.LightningModule):
   """
   def __init__(self, feature_set, lambda_=1.0):
     super(NNUE, self).__init__()
-    self.input = nn.Linear(feature_set.num_features, L1 + 1)
+    self.input = nn.Linear(feature_set.num_features, L1)
+    self.input_psqt = nn.Linear(feature_set.num_features, 1)
     self.feature_set = feature_set
     self.l1 = nn.Linear(2 * L1, L2)
     self.l2 = nn.Linear(L2, L3)
@@ -42,10 +43,13 @@ class NNUE(pl.LightningModule):
   '''
   def _zero_virtual_feature_weights(self):
     weights = self.input.weight
+    weights_psqt = self.input_psqt.weight
     with torch.no_grad():
       for a, b in self.feature_set.get_virtual_feature_ranges():
         weights[:, a:b] = 0.0
+        weights_psqt[:, a:b] = 0.0
     self.input.weight = nn.Parameter(weights)
+    self.input_psqt.weight = nn.Parameter(weights_psqt)
 
   '''
   Pytorch initializes biases around 0, but we want them
@@ -59,7 +63,6 @@ class NNUE(pl.LightningModule):
     output_bias = self.output.bias
     with torch.no_grad():
       input_bias.add_(0.5)
-      input_bias[L1] = 0.0
       l1_bias.add_(0.5)
       l2_bias.add_(0.5)
       output_bias.fill_(0.0)
@@ -69,14 +72,14 @@ class NNUE(pl.LightningModule):
     self.output.bias = nn.Parameter(output_bias)
 
   def _init_psqt(self):
-    input_weights = self.input.weight
+    input_weights = self.input_psqt.weight
     # 1.0 / kPonanzaConstant
     scale = 1 / 600
     with torch.no_grad():
       initial_values = self.feature_set.get_initial_psqt_features()
       assert len(initial_values) == self.feature_set.num_features
-      input_weights[L1, :] = torch.FloatTensor(initial_values) * scale
-    self.input.weight = nn.Parameter(input_weights)
+      input_weights[0, :] = torch.FloatTensor(initial_values) * scale
+    self.input_psqt.weight = nn.Parameter(input_weights)
 
   '''
   This method attempts to convert the model from using the self.feature_set
@@ -118,10 +121,10 @@ class NNUE(pl.LightningModule):
       raise Exception('Cannot change feature set from {} to {}.'.format(self.feature_set.name, new_feature_set.name))
 
   def forward(self, us, them, w_in, b_in):
-    wp = self.input(w_in)
-    bp = self.input(b_in)
-    w, wpsqt = torch.split(wp, L1, dim=1)
-    b, bpsqt = torch.split(bp, L1, dim=1)
+    w = self.input(w_in)
+    b = self.input(b_in)
+    wpsqt = self.input_psqt(w_in)
+    bpsqt = self.input_psqt(b_in)
     l0_ = (us * torch.cat([w, b], dim=1)) + (them * torch.cat([b, w], dim=1))
     # clamp here is used as a clipped relu to (0.0, 1.0)
     l0_ = torch.clamp(l0_, 0.0, 1.0)
@@ -170,13 +173,15 @@ class NNUE(pl.LightningModule):
 
   def configure_optimizers(self):
     # Train with a lower LR on the output layer
-    prune_min_step = 100000000//16384*10
-    prune_max_step = 100000000//16384*60
+    prune_min_step = 5
+    prune_max_step = 10000
+    prune_spec_ft = ranger.WeightPruningSpec(block_width=64, target_density=1/8, min_step=prune_min_step, max_step=prune_max_step, stripe_dim=0)
     prune_spec_l1 = ranger.WeightPruningSpec(block_width=32, target_density=1/8, min_step=prune_min_step, max_step=prune_max_step)
     prune_spec_l2 = ranger.WeightPruningSpec(block_width=32, target_density=1/4, min_step=prune_min_step, max_step=prune_max_step)
     LR = 1e-3
     train_params = [
-      {'params' : self.get_specific_layers([self.input]), 'lr' : LR, 'min_weight' : -(2**15-1)/127, 'max_weight' : (2**15-1)/127 },
+      {'params' : self.get_specific_layers([self.input]), 'lr' : LR, 'min_weight' : -(2**15-1)/127, 'max_weight' : (2**15-1)/127, 'weight_pruning' : prune_spec_ft },
+      {'params' : self.get_specific_layers([self.input_psqt]), 'lr' : LR },
       {'params' : self.get_specific_layers([self.l1]), 'lr' : LR, 'min_weight' : -127/64, 'max_weight' : 127/64, 'weight_pruning' : prune_spec_l1 },
       {'params' : self.get_specific_layers([self.l2]), 'lr' : LR, 'min_weight' : -127/64, 'max_weight' : 127/64, 'weight_pruning' : prune_spec_l2 },
       {'params' : self.get_specific_layers([self.output]), 'lr' : LR / 10, 'min_weight' : -127*127/9600, 'max_weight' : 127*127/9600 },
