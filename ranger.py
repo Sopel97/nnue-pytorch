@@ -42,16 +42,17 @@ def centralized_gradient(x, use_gc=True, gc_conv_only=False):
 
 class WeightPruningSpec:
     def __init__(self, min_step=100000000//16384*10, max_step=100000000//16384*60,
-                 block_width=32, target_density=0.125):
+                 block_width=32, target_density=0.125, stripe_dim=1):
         self.min_step = min_step
         self.max_step = max_step
         self.block_width = block_width
         self.target_density = target_density
+        self.stripe_dim = stripe_dim
 
-        self.current_row = None
+        self.current_stripe = None
         self.next_step_at = None
-        self.target_zero_blocks_per_row = None
-        self.zero_blocks_by_row = None
+        self.target_zero_blocks_per_stripe = None
+        self.zero_blocks_by_stripe = None
         self.mask = None
 
 class Ranger(Optimizer):
@@ -114,39 +115,41 @@ class Ranger(Optimizer):
         print("set state called")
         super(Ranger, self).__setstate__(state)
 
-    def get_new_mask(self, weight, block_width, zero_blocks_by_row):
-        new_mask = torch.ones_like(weight)
-        for row in range(weight.shape[0]):
-            if zero_blocks_by_row[row] == 0:
-                continue
+    def update_mask_in_place(self, mask, weight, block_width, stripe, num_zero_blocks, stripe_dim):
+        if num_zero_blocks == 0:
+            return
 
-            blocks = weight[row,:].view(-1, block_width)
+        if stripe_dim == 1:
+            blocks = weight[stripe,:].view(-1, block_width)
             blocks_l1_norms = [(i, norm.item()) for i, norm in enumerate(blocks.abs().sum(dim=1))]
             blocks_l1_norms.sort(key=lambda x:x[1])
-            for i in range(zero_blocks_by_row[row]):
-                block_idx = blocks_l1_norms[i][0]
-                new_mask[row, block_idx*block_width:block_idx*block_width+block_width].fill_(0.0)
-        return new_mask
+            for block_idx, norm in blocks_l1_norms[:num_zero_blocks]:
+                mask[stripe, block_idx*block_width:block_idx*block_width+block_width].fill_(0.0)
+        elif stripe_dim == 0:
+            blocks = weight[:,stripe].view(-1, block_width)
+            blocks_l1_norms = [(i, norm.item()) for i, norm in enumerate(blocks.abs().sum(dim=1))]
+            blocks_l1_norms.sort(key=lambda x:x[1])
+            for block_idx, norm in blocks_l1_norms[:num_zero_blocks]:
+                mask[block_idx*block_width:block_idx*block_width+block_width, stripe].fill_(0.0)
+        else:
+            raise Exception('Invalid stripe_dim {}'.format(stripe_dim))
 
     def update_mask(self, weight, wp, step):
-        any_change = False
         while step >= wp.next_step_at:
-            if wp.zero_blocks_by_row[wp.current_row] >= wp.target_zero_blocks_per_row:
+            if wp.zero_blocks_by_stripe[wp.current_stripe] >= wp.target_zero_blocks_per_stripe:
                 break
 
-            wp.zero_blocks_by_row[wp.current_row] += 1
-            wp.current_row += 1
-            if wp.current_row >= weight.shape[0]:
-                wp.current_row = 0
+            changed_stripe = wp.current_stripe
+            wp.zero_blocks_by_stripe[wp.current_stripe] += 1
+            wp.current_stripe += 1
+            if wp.current_stripe >= weight.shape[1-wp.stripe_dim]:
+                wp.current_stripe = 0
 
             # interpolate next step based on the current + 1 number of zero blocks
             wp.next_step_at = int(round(wp.min_step + (wp.max_step - wp.min_step) * \
-                ((sum(wp.zero_blocks_by_row) + 1) / (wp.target_zero_blocks_per_row * len(wp.zero_blocks_by_row)))))
+                ((sum(wp.zero_blocks_by_stripe) + 1) / (wp.target_zero_blocks_per_stripe * len(wp.zero_blocks_by_stripe)))))
 
-            any_change = True
-
-        if any_change:
-            wp.mask = self.get_new_mask(weight, wp.block_width, wp.zero_blocks_by_row)
+            self.update_mask_in_place(wp.mask, weight, wp.block_width, changed_stripe, wp.zero_blocks_by_stripe[changed_stripe], wp.stripe_dim)
 
     def do_weight_pruning_step(self, weight, wp, step):
         self.update_mask(weight, wp, step)
@@ -188,10 +191,10 @@ class Ranger(Optimizer):
                     if len(p_data_fp32.shape) == 2 and group['weight_pruning'] is not None:
                         state['weight_pruning'] = copy.deepcopy(group['weight_pruning'])
                         wp = state['weight_pruning']
-                        wp.current_row = 0
+                        wp.current_stripe = 0
                         wp.next_step_at = wp.min_step
-                        wp.target_zero_blocks_per_row = int(round(p_data_fp32.shape[1] * (1.0-wp.target_density) / 32))
-                        wp.zero_blocks_by_row = [0] * p_data_fp32.shape[0]
+                        wp.target_zero_blocks_per_stripe = int(round(p_data_fp32.shape[wp.stripe_dim] * (1.0-wp.target_density) / 32))
+                        wp.zero_blocks_by_stripe = [0] * p_data_fp32.shape[1-wp.stripe_dim]
                         wp.mask = torch.ones_like(p_data_fp32)
                 else:
                     state['exp_avg'] = state['exp_avg'].type_as(p_data_fp32)
