@@ -26,6 +26,7 @@ class SparseBatch(ctypes.Structure):
         ('black', ctypes.POINTER(ctypes.c_int)),
         ('white_values', ctypes.POINTER(ctypes.c_float)),
         ('black_values', ctypes.POINTER(ctypes.c_float)),
+        ('imbalance_x', ctypes.POINTER(ctypes.c_float)),
         ('psqt_indices', ctypes.POINTER(ctypes.c_int)),
         ('layer_stack_indices', ctypes.POINTER(ctypes.c_int)),
     ]
@@ -35,6 +36,7 @@ class SparseBatch(ctypes.Structure):
         black_values = torch.from_numpy(np.ctypeslib.as_array(self.black_values, shape=(self.num_active_black_features,))).pin_memory().to(device=device, non_blocking=True)
         iw = torch.transpose(torch.from_numpy(np.ctypeslib.as_array(self.white, shape=(self.num_active_white_features, 2))).pin_memory().to(device=device, non_blocking=True), 0, 1).long()
         ib = torch.transpose(torch.from_numpy(np.ctypeslib.as_array(self.black, shape=(self.num_active_white_features, 2))).pin_memory().to(device=device, non_blocking=True), 0, 1).long()
+        imbalance_x = torch.from_numpy(np.ctypeslib.as_array(self.imbalance_x, shape=(self.size, 15))).pin_memory().to(device=device, non_blocking=True)
         us = torch.from_numpy(np.ctypeslib.as_array(self.is_white, shape=(self.size, 1))).pin_memory().to(device=device, non_blocking=True)
         them = 1.0 - us
         outcome = torch.from_numpy(np.ctypeslib.as_array(self.outcome, shape=(self.size, 1))).pin_memory().to(device=device, non_blocking=True)
@@ -45,7 +47,7 @@ class SparseBatch(ctypes.Structure):
         black._coalesced_(True)
         psqt_indices = torch.from_numpy(np.ctypeslib.as_array(self.psqt_indices, shape=(self.size,))).long().pin_memory().to(device=device, non_blocking=True)
         layer_stack_indices = torch.from_numpy(np.ctypeslib.as_array(self.layer_stack_indices, shape=(self.size,))).long().pin_memory().to(device=device, non_blocking=True)
-        return us, them, white, black, outcome, score, psqt_indices, layer_stack_indices
+        return us, them, white, black, imbalance_x, outcome, score, psqt_indices, layer_stack_indices
 
 SparseBatchPtr = ctypes.POINTER(SparseBatch)
 

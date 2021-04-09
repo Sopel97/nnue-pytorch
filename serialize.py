@@ -43,6 +43,8 @@ class NNUEWriter():
       self.write_fc_layer(l1)
       self.write_fc_layer(l2)
       self.write_fc_layer(output, is_output=True)
+    for imb in model.layer_stacks.get_coalesced_imbalance():
+      self.write_imbalance_layer(imb)
 
   @staticmethod
   def fc_hash(model):
@@ -99,6 +101,21 @@ class NNUEWriter():
     # weights stored as [41024][256], so we need to transpose the pytorch [256][41024]
     self.buf.extend(weight.transpose(0, 1).flatten().numpy().tobytes())
     self.buf.extend(psqtweight.transpose(0, 1).flatten().numpy().tobytes())
+
+  def write_imbalance_layer(self, layer):
+    kWeightScale = 9600.0
+    kMaxWeight = (2**31-1) / kWeightScale
+
+    # int32 weight = round(x * kWeightScale)
+    weight = layer.weight.data
+    clipped = torch.count_nonzero(weight.clamp(-kMaxWeight, kMaxWeight) - weight)
+    total_elements = torch.numel(weight)
+    clipped_max = torch.max(torch.abs(weight.clamp(-kMaxWeight, kMaxWeight) - weight))
+    print("layer has {}/{} clipped weights. Exceeding by {} the maximum {}.".format(clipped, total_elements, clipped_max, kMaxWeight))
+    weight = weight.clamp(-kMaxWeight, kMaxWeight).mul(kWeightScale).round().to(torch.int32)
+    ascii_hist('imb weight:', weight.numpy())
+    # Stored as [outputs][inputs], so we can flatten
+    self.buf.extend(weight.flatten().numpy().tobytes())
 
   def write_fc_layer(self, layer, is_output=False):
     # FC layers are stored as int8 weights, and int32 biases
@@ -161,6 +178,10 @@ class NNUEReader():
       self.model.layer_stacks.l2.bias.data[i*M.L3:(i+1)*M.L3] = l2.bias
       self.model.layer_stacks.output.weight.data[i:(i+1), :] = output.weight
       self.model.layer_stacks.output.bias.data[i:(i+1)] = output.bias
+    for i in range(self.model.num_ls_buckets):
+      imb = nn.Linear(15, 1)
+      self.read_imbalance_layer(imb)
+      self.model.layer_stacks.imbalance.weight.data[i:(i+1), :] = imb.weight
 
   def read_header(self, feature_set, fc_hash):
     self.read_int32(VERSION) # version
@@ -184,6 +205,11 @@ class NNUEReader():
     weights = weights.divide(127.0).transpose(0, 1)
     psqtweights = psqtweights.divide(9600.0).transpose(0, 1)
     layer.weight.data = torch.cat([weights, psqtweights], dim=0)
+
+  def read_imbalance_layer(self, layer):
+    kWeightScale = 9600.0
+
+    layer.weight.data = self.tensor(numpy.int32, layer.weight.shape).divide(kWeightScale)
 
   def read_fc_layer(self, layer, is_output=False):
     # FC layers are stored as int8 weights, and int32 biases

@@ -55,6 +55,51 @@ class FeatureSet:
             board.pieces(chess.KING, chess.BLACK)
         return (len(all_pieces) - 1) // 4
 
+    def get_imbalance_input(self, board: chess.Board):
+        us = board.turn;
+        them = not us;
+
+        our_pawns = len(board.pieces(chess.PAWN, us));
+        their_pawns = len(board.pieces(chess.PAWN, them));
+
+        our_knights = len(board.pieces(chess.KNIGHT, us));
+        their_knights = len(board.pieces(chess.KNIGHT, them));
+
+        our_bishops = board.pieces(chess.BISHOP, us);
+        their_bishops = board.pieces(chess.BISHOP, them);
+
+        our_ls_bishops = len(our_bishops & chess.BB_LIGHT_SQUARES);
+        their_ls_bishops = len(their_bishops & chess.BB_LIGHT_SQUARES);
+
+        our_ds_bishops = len(our_bishops & chess.BB_DARK_SQUARES);
+        their_ds_bishops = len(their_bishops & chess.BB_DARK_SQUARES);
+
+        our_rooks = len(board.pieces(chess.ROOK, us));
+        their_rooks = len(board.pieces(chess.ROOK, them));
+
+        our_queens = len(board.pieces(chess.QUEEN, us));
+        their_queens = len(board.pieces(chess.QUEEN, them));
+
+        output = [
+            (our_knights - their_knights) * (our_pawns - their_pawns),
+            (our_ls_bishops - their_ls_bishops) * (our_pawns - their_pawns),
+            (our_ls_bishops - their_ls_bishops) * (our_knights - their_knights),
+            (our_ds_bishops - their_ds_bishops) * (our_pawns - their_pawns),
+            (our_ds_bishops - their_ds_bishops) * (our_knights - their_knights),
+            (our_ds_bishops - their_ds_bishops) * (our_ls_bishops - their_ls_bishops),
+            (our_rooks - their_rooks) * (our_pawns - their_pawns),
+            (our_rooks - their_rooks) * (our_knights - their_knights),
+            (our_rooks - their_rooks) * (our_ls_bishops - their_ls_bishops),
+            (our_rooks - their_rooks) * (our_ds_bishops - their_ds_bishops),
+            (our_queens - their_queens) * (our_pawns - their_pawns),
+            (our_queens - their_queens) * (our_knights - their_knights),
+            (our_queens - their_queens) * (our_ls_bishops - their_ls_bishops),
+            (our_queens - their_queens) * (our_ds_bishops - their_ds_bishops),
+            (our_queens - their_queens) * (our_rooks - their_rooks)
+        ]
+
+        return output
+
     '''
     This method returns the feature ranges for the virtual factors of the
     underlying feature blocks. This is useful to know during initialization,

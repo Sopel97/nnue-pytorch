@@ -261,6 +261,7 @@ struct SparseBatch
         black = new int[size * FeatureSet<Ts...>::MAX_ACTIVE_FEATURES * 2];
         white_values = new float[size * FeatureSet<Ts...>::MAX_ACTIVE_FEATURES];
         black_values = new float[size * FeatureSet<Ts...>::MAX_ACTIVE_FEATURES];
+        imbalance_x = new float[size * 15];
         psqt_indices = new int[size];
         layer_stack_indices = new int[size];
 
@@ -288,6 +289,7 @@ struct SparseBatch
     int* black;
     float* white_values;
     float* black_values;
+    float* imbalance_x;
     int* psqt_indices;
     int* layer_stack_indices;
 
@@ -300,6 +302,7 @@ struct SparseBatch
         delete[] black;
         delete[] white_values;
         delete[] black_values;
+        delete[] imbalance_x;
         delete[] psqt_indices;
         delete[] layer_stack_indices;
     }
@@ -309,12 +312,37 @@ private:
     template <typename... Ts>
     void fill_entry(FeatureSet<Ts...>, int i, const TrainingDataEntry& e)
     {
-        is_white[i] = static_cast<float>(e.pos.sideToMove() == Color::White);
+        auto& pos = e.pos;
+        const Color stm = pos.sideToMove();
+
+        is_white[i] = static_cast<float>(stm == Color::White);
         outcome[i] = (e.result + 1.0f) / 2.0f;
         score[i] = e.score;
-        psqt_indices[i] = (e.pos.piecesBB().count() - 1) / 4;
+        psqt_indices[i] = (pos.piecesBB().count() - 1) / 4;
         layer_stack_indices[i] = psqt_indices[i];
         fill_features(FeatureSet<Ts...>{}, i, e);
+
+        int k = 0;
+        constexpr PieceType pts[6] = {PieceType::Pawn, PieceType::Knight, PieceType::Bishop, PieceType::Bishop, PieceType::Rook, PieceType::Queen};
+        constexpr Bitboard masks[6] = {Bitboard::all(), Bitboard::all(), bb::lightSquares, bb::darkSquares, Bitboard::all(), Bitboard::all()};
+        const Color us = stm;
+        const Color them = !stm;
+        for (int ii = 0; ii < 6; ++ii)
+        {
+            const PieceType pt1 = pts[ii];
+            const Bitboard mask1 = masks[ii];
+            const int pt1_us = (pos.piecesBB(Piece(pt1, us)) & mask1).count();
+            const int pt1_them = (pos.piecesBB(Piece(pt1, them)) & mask1).count();
+            for (auto jj = 0; jj < ii; ++jj)
+            {
+                const PieceType pt2 = pts[jj];
+                const Bitboard mask2 = masks[jj];
+                const int pt2_us = (pos.piecesBB(Piece(pt2, us)) & mask2).count();
+                const int pt2_them = (pos.piecesBB(Piece(pt2, them)) & mask2).count();
+                imbalance_x[i*15+k] = (pt1_us - pt1_them) * (pt2_us - pt2_them);
+                ++k;
+            }
+        }
     }
 
     template <typename... Ts>

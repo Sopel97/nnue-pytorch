@@ -29,6 +29,9 @@ class LayerStacks(nn.Module):
     self.l2 = nn.Linear(L2, L3 * count)
     self.output = nn.Linear(L3, 1 * count)
 
+    self.imbalance = nn.Linear(15, 1 * count, bias=False)
+    self.imbalance_fact = nn.Linear(15, 1, bias=False)
+
     self.idx_offset = None
 
     self._init_layers()
@@ -41,8 +44,15 @@ class LayerStacks(nn.Module):
     l2_bias = self.l2.bias
     output_weight = self.output.weight
     output_bias = self.output.bias
+    imb_weight = self.imbalance.weight
+    imb_fact_weight = self.imbalance_fact.weight
     with torch.no_grad():
+      # Fill l1 with zeroes because we rely on the factorizer.
       l1_fact_weight.fill_(0.0)
+      imb_weight.fill_(0.0)
+      imb_fact_weight.fill_(0.0)
+
+      # Bias 0 means no tempo.
       output_bias.fill_(0.0)
 
       for i in range(1, self.count):
@@ -61,8 +71,10 @@ class LayerStacks(nn.Module):
     self.l2.bias = nn.Parameter(l2_bias)
     self.output.weight = nn.Parameter(output_weight)
     self.output.bias = nn.Parameter(output_bias)
+    self.imbalance.weight = nn.Parameter(imb_weight)
+    self.imbalance_fact.weight = nn.Parameter(imb_fact_weight)
 
-  def forward(self, x, ls_indices):
+  def forward(self, x, imb_x, ls_indices):
     # precompute and cache the offset for gathers
     if self.idx_offset == None or self.idx_offset.shape[0] != x.shape[0]:
       self.idx_offset = torch.arange(0,x.shape[0]*self.count,self.count, device=ls_indices.device)
@@ -85,7 +97,11 @@ class LayerStacks(nn.Module):
     l3c_ = l3s_.view(-1, 1)[indices]
     l3x_ = l3c_
 
-    return l3x_
+    imb_ = self.imbalance(imb_x).reshape((-1, self.count, 1))
+    imb_ = imb_.view(-1, 1)[indices]
+    imbf_ = self.imbalance_fact(imb_x)
+
+    return l3x_ + imb_ + imbf_
 
   def get_coalesced_layer_stacks(self):
     for i in range(self.count):
@@ -100,6 +116,13 @@ class LayerStacks(nn.Module):
         output.weight.data = self.output.weight[i:(i+1), :]
         output.bias.data = self.output.bias[i:(i+1)]
         yield l1, l2, output
+
+  def get_coalesced_imbalance(self):
+    for i in range(self.count):
+      with torch.no_grad():
+        imb = nn.Linear(15, 1)
+        imb.weight.data = self.imbalance.weight[i:(i+1), :] + self.imbalance_fact.weight.data
+        yield imb
 
 
 class NNUE(pl.LightningModule):
@@ -197,7 +220,7 @@ class NNUE(pl.LightningModule):
     else:
       raise Exception('Cannot change feature set from {} to {}.'.format(self.feature_set.name, new_feature_set.name))
 
-  def forward(self, us, them, w_in, b_in, psqt_indices, layer_stack_indices):
+  def forward(self, us, them, w_in, b_in, imb_x, psqt_indices, layer_stack_indices):
     wp = self.input(w_in)
     bp = self.input(b_in)
     w, wpsqt = torch.split(wp, L1, dim=1)
@@ -209,12 +232,12 @@ class NNUE(pl.LightningModule):
     psqt_indices_unsq = psqt_indices.unsqueeze(dim=1)
     wpsqt = wpsqt.gather(1, psqt_indices_unsq)
     bpsqt = bpsqt.gather(1, psqt_indices_unsq)
-    x = self.layer_stacks(l0_, layer_stack_indices) + (wpsqt - bpsqt) * (us - 0.5)
+    x = self.layer_stacks(l0_, imb_x, layer_stack_indices) + (wpsqt - bpsqt) * (us - 0.5)
 
     return x
 
   def step_(self, batch, batch_idx, loss_type):
-    us, them, white, black, outcome, score, psqt_indices, layer_stack_indices = batch
+    us, them, white, black, imb_x, outcome, score, psqt_indices, layer_stack_indices = batch
 
     # 600 is the kPonanzaConstant scaling factor needed to convert the training net output to a score.
     # This needs to match the value used in the serializer
@@ -222,7 +245,7 @@ class NNUE(pl.LightningModule):
     in_scaling = 410
     out_scaling = 361
 
-    q = self(us, them, white, black, psqt_indices, layer_stack_indices) * nnue2score / out_scaling
+    q = self(us, them, white, black, imb_x, psqt_indices, layer_stack_indices) * nnue2score / out_scaling
     t = outcome
     p = (score / in_scaling).sigmoid()
 
@@ -259,6 +282,8 @@ class NNUE(pl.LightningModule):
       {'params' : get_parameters([self.layer_stacks.l1, self.layer_stacks.l2]), 'lr' : LR, 'min_weight' : -127/64, 'max_weight' : 127/64 },
       # factorization kinda breaks the min/max weight clipping, but not sure we can do better
       {'params' : get_parameters([self.layer_stacks.l1_fact]), 'lr' : LR, 'min_weight' : -127/64, 'max_weight' : 127/64 },
+      {'params' : get_parameters([self.layer_stacks.imbalance]), 'lr' : LR },
+      {'params' : get_parameters([self.layer_stacks.imbalance_fact]), 'lr' : LR },
       {'params' : get_parameters([self.layer_stacks.output]), 'lr' : LR / 10, 'min_weight' : -127*127/9600, 'max_weight' : 127*127/9600 },
     ]
     # increasing the eps leads to less saturated nets with a few dead neurons
