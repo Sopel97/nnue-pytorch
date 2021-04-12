@@ -498,6 +498,57 @@ private:
 
 extern "C" {
 
+    EXPORT SparseBatch* get_sparse_batch_from_fens(
+        const char* feature_set_c,
+        int num_fens,
+        const char* const* fens,
+        int* scores,
+        int* plies,
+        int* results
+    )
+    {
+        std::vector<TrainingDataEntry> entries;
+        entries.reserve(num_fens);
+        for (int i = 0; i < num_fens; ++i)
+        {
+            TrainingDataEntry e;
+            e.pos = Position::fromFen(fens[i]);
+            movegen::forEachLegalMove(e.pos, [&](Move m){e.move = m;});
+            e.score = scores[i];
+            e.ply = plies[i];
+            e.result = results[i];
+            entries.push_back(std::move(e));
+        }
+
+        std::string_view feature_set(feature_set_c);
+        if (feature_set == "HalfKP")
+        {
+            return new SparseBatch(FeatureSet<HalfKP>{}, entries);
+        }
+        else if (feature_set == "HalfKP^")
+        {
+            return new SparseBatch(FeatureSet<HalfKPFactorized>{}, entries);
+        }
+        else if (feature_set == "HalfKA")
+        {
+            return new SparseBatch(FeatureSet<HalfKA>{}, entries);
+        }
+        else if (feature_set == "HalfKA^")
+        {
+            return new SparseBatch(FeatureSet<HalfKAFactorized>{}, entries);
+        }
+        else if (feature_set == "HalfKAS2v1")
+        {
+            return new SparseBatch(FeatureSet<HalfKAS2v1>{}, entries);
+        }
+        else if (feature_set == "HalfKAS2v1^")
+        {
+            return new SparseBatch(FeatureSet<HalfKAS2v1Factorized>{}, entries);
+        }
+        fprintf(stderr, "Unknown feature_set %s\n", feature_set_c);
+        return nullptr;
+    }
+
     EXPORT Stream<SparseBatch>* CDECL create_sparse_batch_stream(const char* feature_set_c, int concurrency, const char* filename, int batch_size, bool cyclic, bool filtered, int random_fen_skipping)
     {
         std::function<bool(const TrainingDataEntry&)> skipPredicate = nullptr;

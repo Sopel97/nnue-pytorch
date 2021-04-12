@@ -2,8 +2,10 @@ import argparse
 import features
 import serialize
 import nnue_bin_dataset
+import nnue_dataset
 import subprocess
 import re
+import ctypes
 from model import NNUE
 
 def read_model(nnue_path, feature_set):
@@ -27,8 +29,14 @@ def eval_model(model, item):
     else:
         return eval
 
-def eval_engine(engine, fen):
-    pass
+def eval_model_batch(model, batch):
+    us, them, white, black, outcome, score, psqtindex, lsindex = batch.contents.get_tensors('cpu')
+
+    evals = [v.item() for v in model.forward(us, them, white, black, psqtindex, lsindex) * 600.0]
+    for i in range(len(evals)):
+        if them[i] > 0.5:
+            evals[i] = -evals[i]
+    return evals
 
 re_nnue_eval = re.compile(r'NNUE evaluation:\s*?(-?\d*?\.\d*)')
 
@@ -89,6 +97,9 @@ def main():
     data_reader = make_data_reader(args.data, feature_set)
 
     fens = []
+    results = (ctypes.c_int*args.count)()
+    scores = (ctypes.c_int*args.count)()
+    plies = (ctypes.c_int*args.count)()
     model_evals = []
     i = -1
     done = 0
@@ -102,10 +113,18 @@ def main():
 
         fen = board.fen()
         fens.append(fen)
-        eval = eval_model(model, data_reader.transform(item))
-        model_evals.append(eval)
+        results[done] = int(item[2])
+        scores[done] = int(item[3])
+        plies[done] = 1
 
         done += 1
+
+    arr = (ctypes.c_char_p * len(fens))()
+    arr[:] = [fen.encode('utf-8') for fen in fens]
+    b = nnue_dataset.get_sparse_batch_from_fens(feature_set.name.encode('utf-8'), len(fens), arr, scores, plies, results)
+
+    model_evals = eval_model_batch(model, b)
+    nnue_dataset.destroy_sparse_batch(b)
 
     engine_evals = eval_engine_batch(args.engine, args.net, fens)
     compute_correlation(engine_evals, model_evals)
