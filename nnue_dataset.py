@@ -110,6 +110,10 @@ fetch_next_sparse_batch.restype = SparseBatchPtr
 fetch_next_sparse_batch.argtypes = [ctypes.c_void_p]
 destroy_sparse_batch = dll.destroy_sparse_batch
 
+get_sparse_batch_from_fens = dll.get_sparse_batch_from_fens
+get_sparse_batch_from_fens.restype = SparseBatchPtr
+get_sparse_batch_from_fens.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.POINTER(ctypes.c_char_p), ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int)]
+
 class SparseBatchProvider(TrainingDataProvider):
     def __init__(self, feature_set, filename, batch_size, cyclic=True, num_workers=1, filtered=False, random_fen_skipping=0, device='cpu'):
         super(SparseBatchProvider, self).__init__(
