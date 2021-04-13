@@ -231,6 +231,193 @@ struct HalfKAFactorized {
     }
 };
 
+
+
+struct HalfKAE5v2 {
+    /*
+        5 halfka buckets
+        all KK features are packed into one NUM_SQ * NUM_SQ because
+        they are disjoint
+    */
+
+    static constexpr int NUM_SQ = 64;
+    static constexpr int NUM_PT = 11;
+    static constexpr int NUM_PLANES = (NUM_SQ * NUM_PT);
+    static constexpr int INPUTS = NUM_PLANES * NUM_SQ * 5;
+
+    static constexpr int MAX_ACTIVE_FEATURES = 32;
+
+    static int feature_index(Color color, Square ksq, Square sq, Piece p, Bitboard mobility[2][3])
+    {
+        auto p_idx = static_cast<int>(p.type()) * 2 + (p.color() != color);
+        if (p_idx == 11)
+            --p_idx; // pack the opposite king into the same NUM_SQ * NUM_SQ
+        int mobility_index = 2;
+        const Bitboard sqbb = Bitboard::square(sq);
+        for (int i = 0; i < 3; ++i)
+        {
+            mobility_index += (mobility[static_cast<int>(color)][i] & sqbb).any();
+            mobility_index -= (mobility[static_cast<int>(!color)][i] & sqbb).any();
+        }
+        mobility_index = std::clamp(mobility_index, 0, 4);
+        auto bucket_offset = mobility_index * (INPUTS / 5);
+        auto oriented_sq = static_cast<int>(orient_flip(color, sq));
+        return oriented_sq + p_idx * NUM_SQ + static_cast<int>(ksq) * NUM_PLANES + bucket_offset;
+    }
+
+    template<PieceType Pt, Color Us>
+    static void add_piece_mobility(const Position& pos, Bitboard mobility[3], Bitboard their_lesser_mobility) {
+        if constexpr (Pt == PieceType::Pawn)
+        {
+            const Bitboard pawns = pos.piecesBB(Piece(PieceType::Pawn, Us));
+            const Bitboard attacks0 = bb::eastPawnAttacks(pawns, Us);
+            mobility[2] |= mobility[1] & attacks0;
+            mobility[1] |= mobility[0] & attacks0;
+            mobility[0] |= attacks0;
+            const Bitboard attacks1 = bb::westPawnAttacks(pawns, Us);
+            mobility[2] |= mobility[1] & attacks1;
+            mobility[1] |= mobility[0] & attacks1;
+            mobility[0] |= attacks1;
+        }
+        else
+        {
+            Bitboard attackers = pos.piecesBB(Piece(Pt, Us));
+            const Bitboard pieces =
+                Pt == PieceType::Bishop ? pos.piecesBB() ^ pos.piecesBB(Piece(PieceType::Queen, !Us))
+                : Pt == PieceType::Rook ? pos.piecesBB() ^ pos.piecesBB(Piece(PieceType::Rook, Us)) ^ pos.piecesBB(Piece(PieceType::Queen, !Us))
+                : Pt == PieceType::Queen ? pos.piecesBB() ^ pos.piecesBB(Piece(PieceType::Rook, Us)) ^ pos.piecesBB(Piece(PieceType::Queen, Us))
+                : pos.piecesBB();
+            for (Square s : attackers)
+            {
+                const Bitboard attacks = bb::attacks<Pt>(s, pieces) & ~their_lesser_mobility;
+                mobility[2] |= mobility[1] & attacks;
+                mobility[1] |= mobility[0] & attacks;
+                mobility[0] |= attacks;
+            }
+        }
+    }
+
+    template <Color Us>
+    static Bitboard calc_their_lesser_mobility(Bitboard mobility[2][3], Bitboard lower_pieces)
+    {
+        Bitboard bb = Bitboard::none();
+        for (int i = 0; i < 3; ++i)
+            bb |= mobility[static_cast<int>(!Us)][i] & ~mobility[static_cast<int>(Us)][i];
+        bb &= lower_pieces;
+        return bb;
+    }
+
+    template<PieceType Pt>
+    static void add_piece_mobility(const Position& pos, Bitboard mobility[2][3], Bitboard lower_pieces) {
+        Bitboard their_lesser_mobility[2] = {
+            calc_their_lesser_mobility<Color::White>(mobility, lower_pieces),
+            calc_their_lesser_mobility<Color::Black>(mobility, lower_pieces)
+        };
+        add_piece_mobility<Pt, Color::White>(pos, mobility[0], their_lesser_mobility[0]);
+        add_piece_mobility<Pt, Color::Black>(pos, mobility[1], their_lesser_mobility[1]);
+    }
+
+    template<PieceType Pt1, PieceType Pt2, PieceType Pt3>
+    static void add_piece_mobility(const Position& pos, Bitboard mobility[2][3], Bitboard lower_pieces) {
+        Bitboard their_lesser_mobility[2] = {
+            calc_their_lesser_mobility<Color::White>(mobility, lower_pieces),
+            calc_their_lesser_mobility<Color::Black>(mobility, lower_pieces)
+        };
+        add_piece_mobility<Pt1, Color::White>(pos, mobility[0], their_lesser_mobility[0]);
+        add_piece_mobility<Pt1, Color::Black>(pos, mobility[1], their_lesser_mobility[1]);
+        add_piece_mobility<Pt2, Color::White>(pos, mobility[0], their_lesser_mobility[0]);
+        add_piece_mobility<Pt2, Color::Black>(pos, mobility[1], their_lesser_mobility[1]);
+        add_piece_mobility<Pt3, Color::White>(pos, mobility[0], their_lesser_mobility[0]);
+        add_piece_mobility<Pt3, Color::Black>(pos, mobility[1], their_lesser_mobility[1]);
+    }
+
+    static void fill_mobility(const Position& pos, Bitboard mobility[2][3])
+    {
+        for (int i = 0; i < 3; ++i)
+            mobility[0][i] = mobility[1][i] = Bitboard::none();
+
+        Bitboard lower_pieces = Bitboard::none();
+        add_piece_mobility<PieceType::Pawn>(pos, mobility, lower_pieces);
+        lower_pieces |= pos.piecesBB(PieceType::Pawn);
+        add_piece_mobility<PieceType::Knight, PieceType::Bishop, PieceType::Rook>(pos, mobility, lower_pieces);
+        lower_pieces |= pos.piecesBB(PieceType::Knight);
+        lower_pieces |= pos.piecesBB(PieceType::Bishop);
+        lower_pieces |= pos.piecesBB(PieceType::Rook);
+        add_piece_mobility<PieceType::Queen>(pos, mobility, lower_pieces);
+        lower_pieces |= pos.piecesBB(PieceType::Queen);
+        add_piece_mobility<PieceType::King>(pos, mobility, lower_pieces);
+    }
+
+    static int fill_features_sparse(int i, const TrainingDataEntry& e, int* features, float* values, int& counter, Color color)
+    {
+        auto& pos = e.pos;
+        auto pieces = pos.piecesBB();
+        auto ksq = pos.kingSquare(color);
+        Bitboard mobility[2][3];
+        fill_mobility(pos, mobility);
+
+        // We order the features so that the resulting sparse
+        // tensor is coalesced.
+        int features_unordered[32];
+        int j = 0;
+        for(Square sq : pieces)
+        {
+            auto p = pos.pieceAt(sq);
+            features_unordered[j++] = feature_index(color, orient_flip(color, ksq), sq, p, mobility);
+        }
+        std::sort(features_unordered, features_unordered + j);
+        for (int k = 0; k < j; ++k)
+        {
+            int idx = counter * 2;
+            features[idx] = i;
+            features[idx + 1] = features_unordered[k];
+            values[counter] = 1.0f;
+            counter += 1;
+        }
+        return INPUTS;
+    }
+};
+
+struct HalfKAE5v2Factorized {
+    // Factorized features
+    static constexpr int NUM_PT_VIRTUAL = 12;
+    static constexpr int PIECE_INPUTS = HalfKAE5v2::NUM_SQ * NUM_PT_VIRTUAL;
+    static constexpr int INPUTS = HalfKAE5v2::INPUTS + PIECE_INPUTS;
+
+    static constexpr int MAX_PIECE_FEATURES = 32;
+    static constexpr int MAX_ACTIVE_FEATURES = HalfKAE5v2::MAX_ACTIVE_FEATURES + MAX_PIECE_FEATURES;
+
+    static void fill_features_sparse(int i, const TrainingDataEntry& e, int* features, float* values, int& counter, Color color)
+    {
+        auto counter_before = counter;
+        int offset = HalfKAE5v2::fill_features_sparse(i, e, features, values, counter, color);
+        auto& pos = e.pos;
+        auto pieces = pos.piecesBB();
+
+        // We order the features so that the resulting sparse
+        // tensor is coalesced. Note that we can just sort
+        // the parts where values are all 1.0f and leave the
+        // halfk feature where it was.
+        int features_unordered[32];
+        int j = 0;
+        for(Square sq : pieces)
+        {
+            auto p = pos.pieceAt(sq);
+            auto p_idx = static_cast<int>(p.type()) * 2 + (p.color() != color);
+            features_unordered[j++] = offset + (p_idx * HalfKAE5v2::NUM_SQ) + static_cast<int>(orient_flip(color, sq));
+        }
+        std::sort(features_unordered, features_unordered + j);
+        for (int k = 0; k < j; ++k)
+        {
+            int idx = counter * 2;
+            features[idx] = i;
+            features[idx + 1] = features_unordered[k];
+            values[counter] = 1.0f;
+            counter += 1;
+        }
+    }
+};
+
 template <typename T, typename... Ts>
 struct FeatureSet
 {
@@ -537,13 +724,13 @@ extern "C" {
         {
             return new SparseBatch(FeatureSet<HalfKAFactorized>{}, entries);
         }
-        else if (feature_set == "HalfKAS2v1")
+        else if (feature_set == "HalfKAE5v2")
         {
-            return new SparseBatch(FeatureSet<HalfKAS2v1>{}, entries);
+            return new SparseBatch(FeatureSet<HalfKAE5v2>{}, entries);
         }
-        else if (feature_set == "HalfKAS2v1^")
+        else if (feature_set == "HalfKAE5v2^")
         {
-            return new SparseBatch(FeatureSet<HalfKAS2v1Factorized>{}, entries);
+            return new SparseBatch(FeatureSet<HalfKAE5v2Factorized>{}, entries);
         }
         fprintf(stderr, "Unknown feature_set %s\n", feature_set_c);
         return nullptr;
@@ -591,6 +778,14 @@ extern "C" {
         else if (feature_set == "HalfKA^")
         {
             return new FeaturedBatchStream<FeatureSet<HalfKAFactorized>, SparseBatch>(concurrency, filename, batch_size, cyclic, skipPredicate);
+        }
+        else if (feature_set == "HalfKAE5v2")
+        {
+            return new FeaturedBatchStream<FeatureSet<HalfKAE5v2>, SparseBatch>(concurrency, filename, batch_size, cyclic, skipPredicate);
+        }
+        else if (feature_set == "HalfKAE5v2^")
+        {
+            return new FeaturedBatchStream<FeatureSet<HalfKAE5v2Factorized>, SparseBatch>(concurrency, filename, batch_size, cyclic, skipPredicate);
         }
         fprintf(stderr, "Unknown feature_set %s\n", feature_set_c);
         return nullptr;

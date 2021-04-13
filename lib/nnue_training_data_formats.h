@@ -4327,6 +4327,11 @@ namespace chess
             return m_pieceBB[pc];
         }
 
+        [[nodiscard]] constexpr Bitboard piecesBB(PieceType pt) const
+        {
+            return m_pieceBB[Piece(pt, Color::White)] | m_pieceBB[Piece(pt, Color::Black)];
+        }
+
         [[nodiscard]] constexpr Bitboard piecesBB() const
         {
             Bitboard bb{};
