@@ -47,7 +47,7 @@ class Ranger(Optimizer):
                  betas=(.95, 0.999), eps=1e-5, weight_decay=0,  # Adam options
                  # Gradient centralization on or off, applied to conv layers only or conv + fc layers
                  use_gc=True, gc_conv_only=False, gc_loc=True,
-                 min_weight=-1000000.0, max_weight=1000000
+                 min_weight=None, max_weight=None
                  ):
 
         # parameter checks
@@ -68,7 +68,7 @@ class Ranger(Optimizer):
         # prep defaults and init torch.optim base
         defaults = dict(lr=lr, alpha=alpha, k=k, step_counter=0, betas=betas,
                         N_sma_threshhold=N_sma_threshhold, eps=eps, weight_decay=weight_decay,
-                        min_weight=min_weight, max_weight=max_weight)
+                        min_weight=min_weight, max_weight=max_weight, virtual_params=None)
         super().__init__(params, defaults)
 
         # adjustable threshold
@@ -195,9 +195,25 @@ class Ranger(Optimizer):
                 p_data_fp32.add_(G_grad, alpha=-step_size * group['lr'])
 
                 # constrain weights
-                min_weight = group['min_weight']
-                max_weight = group['max_weight']
-                p_data_fp32.clamp_(min_weight, max_weight)
+                if group['min_weight'] is not None or group['max_weight'] is not None:
+                    min_weight = group['min_weight']
+                    max_weight = group['max_weight']
+                    if group['virtual_params'] is not None:
+                        virtual_params = group['virtual_params']
+                        xs = p_data_fp32.shape[0] // virtual_params.shape[0]
+                        ys = p_data_fp32.shape[1] // virtual_params.shape[1]
+                        expanded_virtual_layer = virtual_params.repeat(xs, ys)
+                        if min_weight is not None:
+                            min_weight_t = p_data_fp32.new_full(p_data_fp32.shape, min_weight) - expanded_virtual_layer
+                            p_data_fp32 = torch.max(p_data_fp32, min_weight_t)
+                        if max_weight is not None:
+                            max_weight_t = p_data_fp32.new_full(p_data_fp32.shape, max_weight) - expanded_virtual_layer
+                            p_data_fp32 = torch.min(p_data_fp32, max_weight_t)
+                    else:
+                        if min_weight is not None and max_weight is not None:
+                            p_data_fp32.clamp_(min_weight, max_weight)
+                        else:
+                            raise Exception('Not supported.')
 
                 p.data.copy_(p_data_fp32)
 

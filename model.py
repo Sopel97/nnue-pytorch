@@ -255,11 +255,15 @@ class NNUE(pl.LightningModule):
     # Train with a lower LR on the output layer
     LR = 1e-3
     train_params = [
-      {'params' : get_parameters([self.input]), 'lr' : LR, 'min_weight' : -(2**15-1)/127, 'max_weight' : (2**15-1)/127 },
-      {'params' : get_parameters([self.layer_stacks.l1, self.layer_stacks.l2]), 'lr' : LR, 'min_weight' : -127/64, 'max_weight' : 127/64 },
-      # factorization kinda breaks the min/max weight clipping, but not sure we can do better
-      {'params' : get_parameters([self.layer_stacks.l1_fact]), 'lr' : LR, 'min_weight' : -127/64, 'max_weight' : 127/64 },
-      {'params' : get_parameters([self.layer_stacks.output]), 'lr' : LR / 10, 'min_weight' : -127*127/9600, 'max_weight' : 127*127/9600 },
+      {'params' : get_parameters([self.input]), 'lr' : LR },
+      # Needs to be updated before because the l1 layer depends on it
+      {'params' : [self.layer_stacks.l1_fact.weight], 'lr' : LR },
+      {'params' : [self.layer_stacks.l1.weight], 'lr' : LR, 'min_weight' : -127/64, 'max_weight' : 127/64, 'virtual_params' : self.layer_stacks.l1_fact.weight },
+      {'params' : [self.layer_stacks.l1.bias], 'lr' : LR },
+      {'params' : [self.layer_stacks.l2.weight], 'lr' : LR, 'min_weight' : -127/64, 'max_weight' : 127/64 },
+      {'params' : [self.layer_stacks.l2.bias], 'lr' : LR },
+      {'params' : [self.layer_stacks.output.weight], 'lr' : LR / 10, 'min_weight' : -127*127/9600, 'max_weight' : 127*127/9600 },
+      {'params' : [self.layer_stacks.output.bias], 'lr' : LR / 10 },
     ]
     # increasing the eps leads to less saturated nets with a few dead neurons
     optimizer = ranger.Ranger(train_params, betas=(.9, 0.999), eps=1.0e-7)
