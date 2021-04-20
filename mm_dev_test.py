@@ -109,11 +109,14 @@ void smm_backward(const int* indices, int max_indices, float* weight_grad, const
 
 ''', 'smm_backward')
 
+# TODO: try doing the above with additional value instead of just 1.0
+# TODO: try doing a 2d index in a 1d tensor instead of a 1d index in a 2d tensor.
+#       see if it's better to spawn a shit ton of blocks or on for a few indices
 
 BATCH_SIZE = 8192
 ITERS = 100
 
-stride = 512
+stride = 256
 max_indices = 32
 weight = cp.random.rand(INPUT_SIZE, stride, dtype=cp.float32)
 weight_grad = cp.zeros((INPUT_SIZE, stride), dtype=cp.float32)
