@@ -65,7 +65,7 @@ void smm(const int* indices, int max_indices, const float* matrix, float* output
     // output is of shape (blockDim.x, stride)
 
     int b = blockIdx.x;
-    int t = threadIdx.x;
+    int t = threadIdx.x * sub_stride;
 
     float* output_row = output + b * stride;
     const int* index_row = indices + b * max_indices;
@@ -92,7 +92,7 @@ void smm_backward(const int* indices, int max_indices, float* weight_grad, const
     // output_grad is of shape (blockDim.x, stride)
 
     int b = blockIdx.x;
-    int t = threadIdx.x;
+    int t = threadIdx.x * sub_stride;
 
     const float* out_grad_row = out_grad + b * stride;
     const int* index_row = indices + b * max_indices;
@@ -101,7 +101,7 @@ void smm_backward(const int* indices, int max_indices, float* weight_grad, const
         if (index != -1) {
             float* weight_grad_row = weight_grad + index * stride;
             for (int s = 0; s < sub_stride; ++s) {
-                atomicAdd(weight_grad_row + (t + s), out_grad_row[t + s]);
+                atomicAdd(&weight_grad_row[t + s], out_grad_row[t + s]);
             }
         }
     }
@@ -114,23 +114,24 @@ void smm_backward(const int* indices, int max_indices, float* weight_grad, const
 #       see if it's better to spawn a shit ton of blocks or on for a few indices
 
 BATCH_SIZE = 8192
-ITERS = 100
+ITERS = 64
 
 stride = 256
 max_indices = 32
 weight = cp.random.rand(INPUT_SIZE, stride, dtype=cp.float32)
 weight_grad = cp.zeros((INPUT_SIZE, stride), dtype=cp.float32)
-indices = (cp.random.rand(BATCH_SIZE, max_indices) * INPUT_SIZE).astype(cp.int32)
+indices0 = (cp.random.rand(BATCH_SIZE, max_indices) * INPUT_SIZE).astype(cp.int32)
+indices1 = (cp.random.rand(BATCH_SIZE, max_indices) * INPUT_SIZE).astype(cp.int32)
 output0 = cp.zeros((BATCH_SIZE, stride), dtype=cp.float32)
 output1 = cp.zeros((BATCH_SIZE, stride), dtype=cp.float32)
-num_threads = 128
+num_threads = 256
 start = time.time()
 
 for i in range(ITERS):
-    smm((BATCH_SIZE,), (num_threads,), (indices, max_indices, weight, output0, stride, stride//num_threads))  # grid, block and arguments
-    smm((BATCH_SIZE,), (num_threads,), (indices, max_indices, weight, output1, stride, stride//num_threads))  # grid, block and arguments
-    smm_backward((BATCH_SIZE,), (num_threads,), (indices, max_indices, weight_grad, output0 - output1, stride, stride//num_threads))
-    smm_backward((BATCH_SIZE,), (num_threads,), (indices, max_indices, weight_grad, output0 - output1, stride, stride//num_threads))
+    smm((BATCH_SIZE,), (num_threads,), (indices0, max_indices, weight, output0, stride, stride//num_threads))  # grid, block and arguments
+    smm((BATCH_SIZE,), (num_threads,), (indices1, max_indices, weight, output1, stride, stride//num_threads))  # grid, block and arguments
+    smm_backward((BATCH_SIZE,), (num_threads,), (indices0, max_indices, weight_grad, output0 - output1, stride, stride//num_threads))
+    smm_backward((BATCH_SIZE,), (num_threads,), (indices1, max_indices, weight_grad, output0 - output1, stride, stride//num_threads))
     print(output0)
     print(output1)
     print(weight_grad)
