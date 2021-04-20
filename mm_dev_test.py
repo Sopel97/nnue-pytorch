@@ -101,7 +101,7 @@ void smm_backward(const int* indices, int max_indices, float* weight_grad, const
         if (index != -1) {
             float* weight_grad_row = weight_grad + index * stride;
             for (int s = 0; s < sub_stride; ++s) {
-                weight_grad_row[t + s] += out_grad_row[t + s];
+                atomicAdd(weight_grad_row + (t + s), out_grad_row[t + s]);
             }
         }
     }
@@ -129,6 +129,7 @@ start = time.time()
 for i in range(ITERS):
     smm((BATCH_SIZE,), (num_threads,), (indices, max_indices, weight, output0, stride, stride//num_threads))  # grid, block and arguments
     smm((BATCH_SIZE,), (num_threads,), (indices, max_indices, weight, output1, stride, stride//num_threads))  # grid, block and arguments
+    smm_backward((BATCH_SIZE,), (num_threads,), (indices, max_indices, weight_grad, output0 - output1, stride, stride//num_threads))
     smm_backward((BATCH_SIZE,), (num_threads,), (indices, max_indices, weight_grad, output0 - output1, stride, stride//num_threads))
     print(output0)
     print(output1)
