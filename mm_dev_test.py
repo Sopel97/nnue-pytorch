@@ -133,6 +133,7 @@ for i in range(ITERS):
     smm_backward((BATCH_SIZE,), (num_threads,), (indices, max_indices, weight_grad, output0 - output1, stride, stride//num_threads))
     print(output0)
     print(output1)
+    print(weight_grad)
     print(output0.shape)
 
 end = time.time()
