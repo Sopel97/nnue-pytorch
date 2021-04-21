@@ -222,14 +222,14 @@ class FeatureTransformerSliceFunction(autograd.Function):
 
     @staticmethod
     def get_num_threads(output_size):
-        if output_size not in num_threads_cache:
-            num_threads_cache[output_size] = find_nearest_divisor(output_size, optimal_num_threads)
+        if output_size not in FeatureTransformerSliceFunction.num_threads_cache:
+            FeatureTransformerSliceFunction.num_threads_cache[output_size] = find_nearest_divisor(output_size, FeatureTransformerSliceFunction.optimal_num_threads)
 
-        return num_threads_cache[output_size]
+        return FeatureTransformerSliceFunction.num_threads_cache[output_size]
 
     @staticmethod
     def forward(ctx, feature_indices, feature_values, weight, bias):
-        ctx.save_for_backward(feature_indices, feature_weights, weight, bias)
+        ctx.save_for_backward(feature_indices, feature_values, weight, bias)
 
         assert len(feature_indices.shape) == 2
         assert len(feature_values.shape) == 2
@@ -262,7 +262,7 @@ class FeatureTransformerSliceFunction(autograd.Function):
         batch_size = feature_indices.shape[0]
         max_active_features = feature_indices.shape[1]
         output_size = weight.shape[1]
-        num_threads = get_num_threads(output_size)
+        num_threads = FeatureTransformerSliceFunction.get_num_threads(output_size)
 
         output = torch.empty(batch_size, output_size, dtype=torch.float32, device=device, requires_grad=True)
 
@@ -286,18 +286,20 @@ class FeatureTransformerSliceFunction(autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         assert not ctx.needs_input_grad[0]
+        assert not ctx.needs_input_grad[1]
+
+        grad_output = grad_output.contiguous()
 
         feature_indices, feature_values, weight, bias = ctx.saved_tensors
-        grad_input = grad_weight = grad_bias = None
 
         device = feature_indices.device
         batch_size = feature_indices.shape[0]
         max_active_features = feature_indices.shape[1]
         output_size = weight.shape[1]
-        num_threads = get_num_threads(output_size)
+        num_threads = FeatureTransformerSliceFunction.get_num_threads(output_size)
 
-        weight_grad = torch.empty(weight.shape[0], weight.shape[1], dtype=torch.float32, device=device)
-        bias_grad = torch.empty(output_size, dtype=torch.float32, device=device)
+        weight_grad = torch.zeros(weight.shape[0], weight.shape[1], dtype=torch.float32, device=device)
+        bias_grad = torch.zeros(output_size, dtype=torch.float32, device=device)
 
         feature_transformer_slice_backward(
             (batch_size,),
@@ -314,7 +316,7 @@ class FeatureTransformerSliceFunction(autograd.Function):
             )
         )
 
-        return grad_input, grad_weight, grad_bias
+        return None, None, weight_grad, bias_grad
 
 def FeatureTransformerSliceFunctionEmulate(feature_indices, feature_values, weight, bias):
     batch_size = feature_indices.shape[0]
@@ -334,16 +336,26 @@ INPUT_SIZE = 10
 MAX_ACTIVE_FEATURES = 32
 STRIDE = 128
 
-weight = torch.rand(INPUT_SIZE, STRIDE, dtype=torch.float32, requires_grad=True)
-bias = torch.rand(STRIDE, dtype=torch.float32, requires_grad=True)
+torch.manual_seed(0)
+weight0 = torch.rand(INPUT_SIZE, STRIDE, dtype=torch.float32, requires_grad=True)
+bias0 = torch.rand(STRIDE, dtype=torch.float32, requires_grad=True)
+torch.manual_seed(0)
+weight1 = torch.rand(INPUT_SIZE, STRIDE, dtype=torch.float32, requires_grad=True)
+bias1 = torch.rand(STRIDE, dtype=torch.float32, requires_grad=True)
 indices = (torch.rand(BATCH_SIZE, MAX_ACTIVE_FEATURES) * INPUT_SIZE).to(dtype=torch.int32)
 values = torch.rand(BATCH_SIZE, MAX_ACTIVE_FEATURES, dtype=torch.float32)
-output = FeatureTransformerSliceFunctionEmulate(indices, values, weight, bias)
-print(output.shape)
-print(output)
-output.sum().backward()
-print(weight.grad)
-print(bias.grad)
+
+output0 = FeatureTransformerSliceFunctionEmulate(indices.clone(), values.clone(), weight0, bias0)
+output1 = FeatureTransformerSliceFunction.apply(indices.clone().cuda(), values.clone().cuda(), weight1.cuda(), bias1.cuda())
+
+print(output0)
+print(output1)
+output0.sum().backward()
+output1.sum().backward()
+print(weight0.grad)
+print(bias0.grad)
+print(weight1.grad)
+print(bias1.grad)
 
 sys.exit(0)
 
