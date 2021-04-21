@@ -316,6 +316,37 @@ class FeatureTransformerSliceFunction(autograd.Function):
 
         return grad_input, grad_weight, grad_bias
 
+def FeatureTransformerSliceFunctionEmulate(feature_indices, feature_values, weight, bias):
+    batch_size = feature_indices.shape[0]
+    num_inputs = weight.shape[0]
+    max_active_features = feature_indices.shape[1]
+    inputs = torch.zeros(batch_size, num_inputs, dtype=torch.float32, device=weight.device)
+    for i in range(batch_size):
+        for j in range(max_active_features):
+            feature = feature_indices[i, j]
+            value = feature_values[i, j]
+            inputs[i, feature] += value
+
+    return torch.mm(inputs, weight) + bias
+
+BATCH_SIZE = 16
+INPUT_SIZE = 10
+MAX_ACTIVE_FEATURES = 32
+STRIDE = 128
+
+weight = torch.rand(INPUT_SIZE, STRIDE, dtype=torch.float32, requires_grad=True)
+bias = torch.rand(STRIDE, dtype=torch.float32, requires_grad=True)
+indices = (torch.rand(BATCH_SIZE, MAX_ACTIVE_FEATURES) * INPUT_SIZE).to(dtype=torch.int32)
+values = torch.rand(BATCH_SIZE, MAX_ACTIVE_FEATURES, dtype=torch.float32)
+output = FeatureTransformerSliceFunctionEmulate(indices, values, weight, bias)
+print(output.shape)
+print(output)
+output.sum().backward()
+print(weight.grad)
+print(bias.grad)
+
+sys.exit(0)
+
 INPUT_SIZE = 40960
 BATCH_SIZE = 8192
 ITERS = 64
