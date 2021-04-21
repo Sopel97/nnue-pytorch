@@ -174,20 +174,20 @@ extern "C" __global__
         where N is the number of threads with which this kernel is launched.
 */
 void feature_transformer_slice_forward(
-    const int32_t* feature_indices,
-    const float*   feature_values,
-    const int32_t  max_active_features,
-    const float*   weight,
-    const float*   bias,
-          float*   output,
-    const uint32_t output_size,
-    const uint32_t output_thread_slice_size
+    const int32_t* const feature_indices,
+    const float*   const feature_values,
+    const int32_t        max_active_features,
+    const float*   const weight,
+    const float*   const bias,
+          float*   const output,
+    const uint32_t       output_size,
+    const uint32_t       output_thread_slice_size
 ) {
     const uint32_t       block_idx         = blockIdx.x;
     const uint32_t       slice_offset      = threadIdx.x * output_thread_slice_size;
 
           float*   const output_slice      = output + block_idx * output_size + slice_offset;
-    const float*   const bias_slice        = bias + slice_offset;
+    const float*   const bias_slice        = bias                             + slice_offset;
 
     const int32_t* const feature_index_row = feature_indices + block_idx * max_active_features;
     const float*   const feature_value_row = feature_values  + block_idx * max_active_features;
@@ -276,20 +276,20 @@ extern "C" __global__
         where N is the number of threads with which this kernel is launched.
 */
 void feature_transformer_slice_backward(
-    const int32_t* feature_indices,
-    const float*   feature_values,
-    const int32_t  max_active_features,
-          float*   weight_grad,
-          float*   bias_grad,
-    const float*   output_grad,
-    const uint32_t output_size,
-    const uint32_t output_thread_slice_size
+    const int32_t* const feature_indices,
+    const float*   const feature_values,
+    const int32_t        max_active_features,
+          float*   const weight_grad,
+          float*   const bias_grad,
+    const float*   const output_grad,
+    const uint32_t       output_size,
+    const uint32_t       output_thread_slice_size
 ) {
     const uint32_t       block_idx         = blockIdx.x;
     const uint32_t       slice_offset      = threadIdx.x * output_thread_slice_size;
 
     const float*   const output_grad_slice = output_grad + block_idx * output_size + slice_offset;
-          float*   const bias_grad_slice   = bias_grad + slice_offset;
+          float*   const bias_grad_slice   = bias_grad                             + slice_offset;
 
     const int32_t* const feature_index_row = feature_indices + block_idx * max_active_features;
     const float*   const feature_value_row = feature_values  + block_idx * max_active_features;
