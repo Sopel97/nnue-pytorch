@@ -330,7 +330,7 @@ def FeatureTransformerSliceFunctionEmulate(feature_indices, feature_values, weig
             inputs[i, feature] += value
 
     return torch.mm(inputs, weight) + bias
-
+"""
 BATCH_SIZE = 16
 INPUT_SIZE = 10
 MAX_ACTIVE_FEATURES = 32
@@ -358,91 +358,31 @@ print(weight1.grad)
 print(bias1.grad)
 
 sys.exit(0)
+"""
 
 INPUT_SIZE = 40960
 BATCH_SIZE = 8192
 ITERS = 64
-stride = 256
-max_indices = 32
+STRIDE = 256
+MAX_ACTIVE_FEATURES = 32
 
-weight = cp.random.rand(INPUT_SIZE, stride, dtype=cp.float32)
-bias = cp.random.rand(stride, dtype=cp.float32)
-weight_grad = cp.zeros((INPUT_SIZE, stride), dtype=cp.float32)
-bias_grad = cp.zeros((stride,), dtype=cp.float32)
-indices0 = (cp.random.rand(BATCH_SIZE, max_indices) * INPUT_SIZE).astype(cp.int32)
-indices1 = (cp.random.rand(BATCH_SIZE, max_indices) * INPUT_SIZE).astype(cp.int32)
-values0 = cp.random.rand(BATCH_SIZE, max_indices, dtype=cp.float32)
-values1 = cp.random.rand(BATCH_SIZE, max_indices, dtype=cp.float32)
-output0 = cp.zeros((BATCH_SIZE, stride), dtype=cp.float32)
-output1 = cp.zeros((BATCH_SIZE, stride), dtype=cp.float32)
-num_threads = find_nearest_divisor(stride, 256)
+weight = torch.rand(INPUT_SIZE, STRIDE, dtype=torch.float32, requires_grad=True).cuda()
+bias = torch.rand(STRIDE, dtype=torch.float32, requires_grad=True).cuda()
+indices0 = (torch.rand(BATCH_SIZE, MAX_ACTIVE_FEATURES) * INPUT_SIZE).to(dtype=torch.int32).cuda()
+values0 = torch.rand(BATCH_SIZE, MAX_ACTIVE_FEATURES, dtype=torch.float32).cuda()
+indices1 = (torch.rand(BATCH_SIZE, MAX_ACTIVE_FEATURES) * INPUT_SIZE).to(dtype=torch.int32).cuda()
+values1 = torch.rand(BATCH_SIZE, MAX_ACTIVE_FEATURES, dtype=torch.float32).cuda()
+
 start = time.time()
 
 for i in range(ITERS):
-    feature_transformer_slice_forward(
-        (BATCH_SIZE,),
-        (num_threads,),
-        (
-            indices0,
-            values0,
-            max_indices,
-            weight,
-            bias,
-            output0,
-            stride,
-            stride//num_threads
-        )
-    )
-    feature_transformer_slice_forward(
-        (BATCH_SIZE,),
-        (num_threads,),
-        (
-            indices1,
-            values1,
-            max_indices,
-            weight,
-            bias,
-            output1,
-            stride,
-            stride//num_threads
-        )
-    )
+    output0 = FeatureTransformerSliceFunction.apply(indices0, values0, weight, bias)
+    output1 = FeatureTransformerSliceFunction.apply(indices1, values1, weight, bias)
 
-    g = output0 - output1
+    g = (output0 - output1).mean()
+    g.backward()
 
-    feature_transformer_slice_backward(
-        (BATCH_SIZE,),
-        (num_threads,),
-        (
-            indices0,
-            values0,
-            max_indices,
-            weight_grad,
-            bias_grad,
-            g,
-            stride,
-            stride//num_threads
-        )
-    )
-    feature_transformer_slice_backward(
-        (BATCH_SIZE,),
-        (num_threads,),
-        (
-            indices1,
-            values1,
-            max_indices,
-            weight_grad,
-            bias_grad,
-            g,
-            stride,
-            stride//num_threads
-        )
-    )
-
-    print(output0)
-    print(output1)
-    print(weight_grad)
-    print(output0.shape)
+    torch.cuda.synchronize()
 
 end = time.time()
 print((ITERS * BATCH_SIZE * 2) / (end - start))
