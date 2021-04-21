@@ -313,11 +313,19 @@ void feature_transformer_slice_backward(
 
 ''', 'feature_transformer_slice_backward')
 
+def find_nearest_divisor(value, target):
+    divisors = []
+    for i in range(1, value+1):
+        if value % i == 0:
+            divisors.append((i, abs(target-i)))
+    divisors.sort(key=lambda x:x[1])
+    return divisors[0][0]
+
 BATCH_SIZE = 8192
 ITERS = 64
-
 stride = 256
 max_indices = 32
+
 weight = cp.random.rand(INPUT_SIZE, stride, dtype=cp.float32)
 bias = cp.random.rand(stride, dtype=cp.float32)
 weight_grad = cp.zeros((INPUT_SIZE, stride), dtype=cp.float32)
@@ -328,7 +336,7 @@ values0 = cp.random.rand(BATCH_SIZE, max_indices, dtype=cp.float32)
 values1 = cp.random.rand(BATCH_SIZE, max_indices, dtype=cp.float32)
 output0 = cp.zeros((BATCH_SIZE, stride), dtype=cp.float32)
 output1 = cp.zeros((BATCH_SIZE, stride), dtype=cp.float32)
-num_threads = 256
+num_threads = find_nearest_divisor(stride, 256)
 start = time.time()
 
 for i in range(ITERS):
