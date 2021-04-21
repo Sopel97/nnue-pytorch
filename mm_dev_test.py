@@ -1,117 +1,6 @@
 import torch
 import time
-from torch_sparse import coalesce
-from torch_sparse import spmm
-from torch_sparse import transpose
-
-INPUT_SIZE = 40960
-
-#weight = torch.rand(INPUT_SIZE, 256, requires_grad=True).cuda()
-#weight = torch.rand(INPUT_SIZE, 256, requires_grad=True).cuda()
-
-'''
-indices = (torch.rand(32) * INPUT_SIZE).long()
-
-print(indices)
-print(weight[:,indices])
-print(torch.sum(weight[:,indices], dim=1))
-'''
-
-BATCH_SIZE = 8192
-ITERS = 100
-
-'''
-indices_batch = (torch.rand(BATCH_SIZE, 32) * INPUT_SIZE).long().cuda()
-
-start = time.time()
-
-for i in range(ITERS):
-    output = torch.sum(weight[indices_batch,:], dim=1)
-    torch.sum(output, dim=0).mean().backward()
-    torch.cuda.synchronize()
-    print(output.shape)
-
-end = time.time()
-print((ITERS * BATCH_SIZE) / (end - start))
-'''
-
-'''
-indices_batch = torch.stack([torch.repeat_interleave(torch.arange(BATCH_SIZE), 32).long(), (torch.rand(BATCH_SIZE * 32) * INPUT_SIZE).long()]).cuda()
-values = torch.full((BATCH_SIZE * 32,), 1).cuda()
-print(indices_batch)
-index, value = coalesce(indices_batch, values, m=BATCH_SIZE, n=INPUT_SIZE)
-
-start = time.time()
-
-for i in range(ITERS):
-    output = spmm(index, value, BATCH_SIZE, INPUT_SIZE, weight)
-    torch.sum(output, dim=0).mean().backward()
-    torch.cuda.synchronize()
-    print(output.shape)
-
-end = time.time()
-print((ITERS * BATCH_SIZE) / (end - start))
-'''
-
 import cupy as cp
-
-smm = cp.RawKernel(r'''
-
-extern "C" __global__
-
-void smm(const int* indices, const float* values, int max_indices, const float* matrix, float* output, int stride, int sub_stride) {
-    // indices has shape (blockDim.x, 32)
-    // matrix has shape (*, stride)
-    // output is of shape (blockDim.x, stride)
-
-    int b = blockIdx.x;
-    int t = threadIdx.x * sub_stride;
-
-    float* output_row = output + b * stride;
-    const int* index_row = indices + b * max_indices;
-    const float* value_row = values + b * max_indices;
-    for (int index_id = 0; index_id < max_indices; ++index_id) {
-        int index = index_row[index_id];
-        float value = value_row[index_id];
-        if (index != -1) {
-            const float* input_row = matrix + index * stride;
-            for (int s = 0; s < sub_stride; ++s) {
-                output_row[t + s] += input_row[t + s] * value;
-            }
-        }
-    }
-}
-
-''', 'smm')
-
-smm_backward = cp.RawKernel(r'''
-
-extern "C" __global__
-
-void smm_backward(const int* indices, const float* values, int max_indices, float* weight_grad, const float* out_grad, int stride, int sub_stride) {
-    // indices has shape (blockDim.x, 32)
-    // weight_grad has shape (*, stride)
-    // output_grad is of shape (blockDim.x, stride)
-
-    int b = blockIdx.x;
-    int t = threadIdx.x * sub_stride;
-
-    const float* out_grad_row = out_grad + b * stride;
-    const int* index_row = indices + b * max_indices;
-    const float* value_row = values + b * max_indices;
-    for (int index_id = 0; index_id < max_indices; ++index_id) {
-        int index = index_row[index_id];
-        float value = value_row[index_id];
-        if (index != -1) {
-            float* weight_grad_row = weight_grad + index * stride;
-            for (int s = 0; s < sub_stride; ++s) {
-                atomicAdd(&weight_grad_row[t + s], out_grad_row[t + s] * value);
-            }
-        }
-    }
-}
-
-''', 'smm_backward')
 
 feature_transformer_slice_forward = cp.RawKernel(r'''
 
@@ -321,6 +210,7 @@ def find_nearest_divisor(value, target):
     divisors.sort(key=lambda x:x[1])
     return divisors[0][0]
 
+INPUT_SIZE = 40960
 BATCH_SIZE = 8192
 ITERS = 64
 stride = 256
