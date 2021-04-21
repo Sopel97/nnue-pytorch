@@ -4,6 +4,7 @@ from torch import autograd
 import time
 import cupy as cp
 import sys
+import math
 
 feature_transformer_slice_forward = cp.RawKernel(r'''
 
@@ -330,6 +331,20 @@ def FeatureTransformerSliceFunctionEmulate(feature_indices, feature_values, weig
             inputs[i, feature] += value
 
     return torch.mm(inputs, weight) + bias
+
+class FeatureTransformerSlice(nn.Module):
+    def __init__(self, num_inputs, num_outputs):
+        super(FeatureTransformerSlice, self).__init__()
+        self.num_inputs = num_inputs
+        self.num_outputs = num_outputs
+
+        sigma = math.sqrt(1/num_inputs)
+        self.weight = nn.Parameter(torch.rand(num_inputs, num_outputs, dtype=torch.float32) * (2 * sigma) - sigma)
+        self.bias = nn.Parameter(torch.rand(num_outputs, dtype=torch.float32) * (2 * sigma) - sigma)
+
+    def forward(self, feature_indices, feature_values):
+        return FeatureTransformerSliceFunction.apply(feature_indices, feature_values, self.weight, self.bias)
+
 """
 BATCH_SIZE = 16
 INPUT_SIZE = 10
@@ -366,8 +381,7 @@ ITERS = 64
 STRIDE = 256
 MAX_ACTIVE_FEATURES = 32
 
-weight = torch.rand(INPUT_SIZE, STRIDE, dtype=torch.float32, requires_grad=True).cuda()
-bias = torch.rand(STRIDE, dtype=torch.float32, requires_grad=True).cuda()
+layer = FeatureTransformerSlice(INPUT_SIZE, STRIDE).cuda()
 indices0 = (torch.rand(BATCH_SIZE, MAX_ACTIVE_FEATURES) * INPUT_SIZE).to(dtype=torch.int32).cuda()
 values0 = torch.rand(BATCH_SIZE, MAX_ACTIVE_FEATURES, dtype=torch.float32).cuda()
 indices1 = (torch.rand(BATCH_SIZE, MAX_ACTIVE_FEATURES) * INPUT_SIZE).to(dtype=torch.int32).cuda()
@@ -376,13 +390,16 @@ values1 = torch.rand(BATCH_SIZE, MAX_ACTIVE_FEATURES, dtype=torch.float32).cuda(
 start = time.time()
 
 for i in range(ITERS):
-    output0 = FeatureTransformerSliceFunction.apply(indices0, values0, weight, bias)
-    output1 = FeatureTransformerSliceFunction.apply(indices1, values1, weight, bias)
+    output0 = layer(indices0, values0)
+    output1 = layer(indices1, values1)
 
-    g = (output0 - output1).mean()
+    g = ((output0 - output1)**2).mean()
     g.backward()
 
     torch.cuda.synchronize()
 
+for param in layer.parameters():
+    print(param.grad)
+
 end = time.time()
-print((ITERS * BATCH_SIZE * 2) / (end - start))
+print((ITERS * BATCH_SIZE) / (end - start))
