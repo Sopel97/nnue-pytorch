@@ -59,7 +59,7 @@ smm = cp.RawKernel(r'''
 
 extern "C" __global__
 
-void smm(const int* indices, int max_indices, const float* matrix, float* output, int stride, int sub_stride) {
+void smm(const int* indices, const float* values, int max_indices, const float* matrix, float* output, int stride, int sub_stride) {
     // indices has shape (blockDim.x, 32)
     // matrix has shape (*, stride)
     // output is of shape (blockDim.x, stride)
@@ -69,12 +69,14 @@ void smm(const int* indices, int max_indices, const float* matrix, float* output
 
     float* output_row = output + b * stride;
     const int* index_row = indices + b * max_indices;
+    const float* value_row = values + b * max_indices;
     for (int index_id = 0; index_id < max_indices; ++index_id) {
         int index = index_row[index_id];
+        float value = value_row[index_id];
         if (index != -1) {
             const float* input_row = matrix + index * stride;
             for (int s = 0; s < sub_stride; ++s) {
-                output_row[t + s] += input_row[t + s];
+                output_row[t + s] += input_row[t + s] * value;
             }
         }
     }
@@ -86,7 +88,7 @@ smm_backward = cp.RawKernel(r'''
 
 extern "C" __global__
 
-void smm_backward(const int* indices, int max_indices, float* weight_grad, const float* out_grad, int stride, int sub_stride) {
+void smm_backward(const int* indices, const float* values, int max_indices, float* weight_grad, const float* out_grad, int stride, int sub_stride) {
     // indices has shape (blockDim.x, 32)
     // weight_grad has shape (*, stride)
     // output_grad is of shape (blockDim.x, stride)
@@ -96,12 +98,14 @@ void smm_backward(const int* indices, int max_indices, float* weight_grad, const
 
     const float* out_grad_row = out_grad + b * stride;
     const int* index_row = indices + b * max_indices;
+    const float* value_row = values + b * max_indices;
     for (int index_id = 0; index_id < max_indices; ++index_id) {
         int index = index_row[index_id];
+        float value = value_row[index_id];
         if (index != -1) {
             float* weight_grad_row = weight_grad + index * stride;
             for (int s = 0; s < sub_stride; ++s) {
-                atomicAdd(&weight_grad_row[t + s], out_grad_row[t + s]);
+                atomicAdd(&weight_grad_row[t + s], out_grad_row[t + s] * value);
             }
         }
     }
@@ -122,16 +126,18 @@ weight = cp.random.rand(INPUT_SIZE, stride, dtype=cp.float32)
 weight_grad = cp.zeros((INPUT_SIZE, stride), dtype=cp.float32)
 indices0 = (cp.random.rand(BATCH_SIZE, max_indices) * INPUT_SIZE).astype(cp.int32)
 indices1 = (cp.random.rand(BATCH_SIZE, max_indices) * INPUT_SIZE).astype(cp.int32)
+values0 = cp.random.rand(BATCH_SIZE, max_indices, dtype=cp.float32)
+values1 = cp.random.rand(BATCH_SIZE, max_indices, dtype=cp.float32)
 output0 = cp.zeros((BATCH_SIZE, stride), dtype=cp.float32)
 output1 = cp.zeros((BATCH_SIZE, stride), dtype=cp.float32)
 num_threads = 256
 start = time.time()
 
 for i in range(ITERS):
-    smm((BATCH_SIZE,), (num_threads,), (indices0, max_indices, weight, output0, stride, stride//num_threads))  # grid, block and arguments
-    smm((BATCH_SIZE,), (num_threads,), (indices1, max_indices, weight, output1, stride, stride//num_threads))  # grid, block and arguments
-    smm_backward((BATCH_SIZE,), (num_threads,), (indices0, max_indices, weight_grad, output0 - output1, stride, stride//num_threads))
-    smm_backward((BATCH_SIZE,), (num_threads,), (indices1, max_indices, weight_grad, output0 - output1, stride, stride//num_threads))
+    smm((BATCH_SIZE,), (num_threads,), (indices0, values0, max_indices, weight, output0, stride, stride//num_threads))  # grid, block and arguments
+    smm((BATCH_SIZE,), (num_threads,), (indices1, values1, max_indices, weight, output1, stride, stride//num_threads))  # grid, block and arguments
+    smm_backward((BATCH_SIZE,), (num_threads,), (indices0, values0, max_indices, weight_grad, output0 - output1, stride, stride//num_threads))
+    smm_backward((BATCH_SIZE,), (num_threads,), (indices1, values1, max_indices, weight_grad, output0 - output1, stride, stride//num_threads))
     print(output0)
     print(output1)
     print(weight_grad)
