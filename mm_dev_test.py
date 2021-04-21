@@ -1,6 +1,9 @@
 import torch
+from torch import nn
+from torch import autograd
 import time
 import cupy as cp
+import sys
 
 feature_transformer_slice_forward = cp.RawKernel(r'''
 
@@ -202,6 +205,9 @@ void feature_transformer_slice_backward(
 
 ''', 'feature_transformer_slice_backward')
 
+feature_transformer_slice_forward.compile(sys.stdout)
+feature_transformer_slice_backward.compile(sys.stdout)
+
 def find_nearest_divisor(value, target):
     divisors = []
     for i in range(1, value+1):
@@ -209,6 +215,106 @@ def find_nearest_divisor(value, target):
             divisors.append((i, abs(target-i)))
     divisors.sort(key=lambda x:x[1])
     return divisors[0][0]
+
+class FeatureTransformerSliceFunction(autograd.Function):
+    optimal_num_threads = 256
+    num_threads_cache = dict()
+
+    @staticmethod
+    def get_num_threads(output_size):
+        if output_size not in num_threads_cache:
+            num_threads_cache[output_size] = find_nearest_divisor(output_size, optimal_num_threads)
+
+        return num_threads_cache[output_size]
+
+    @staticmethod
+    def forward(ctx, feature_indices, feature_values, weight, bias):
+        ctx.save_for_backward(feature_indices, feature_weights, weight, bias)
+
+        assert len(feature_indices.shape) == 2
+        assert len(feature_values.shape) == 2
+        assert feature_indices.shape[0] == feature_values.shape[0]
+        assert feature_indices.shape[1] == feature_values.shape[1]
+        assert feature_indices.dtype == torch.int32
+        assert feature_values.dtype == torch.float32
+
+        assert len(weight.shape) == 2
+        assert weight.dtype == torch.float32
+
+        assert len(bias.shape) == 1
+        assert bias.dtype == torch.float32
+
+        assert feature_indices.is_cuda
+        assert feature_values.is_cuda
+        assert weight.is_cuda
+        assert bias.is_cuda
+
+        assert feature_values.device == feature_indices.device
+        assert weight.device == feature_indices.device
+        assert bias.device == feature_indices.device
+
+        assert feature_indices.is_contiguous()
+        assert feature_values.is_contiguous()
+        assert weight.is_contiguous()
+        assert bias.is_contiguous()
+
+        device = feature_indices.device
+        batch_size = feature_indices.shape[0]
+        max_active_features = feature_indices.shape[1]
+        output_size = weight.shape[1]
+        num_threads = get_num_threads(output_size)
+
+        output = torch.empty(batch_size, output_size, dtype=torch.float32, device=device, requires_grad=True)
+
+        feature_transformer_slice_forward(
+            grid=(batch_size,),
+            block=(num_threads,),
+            args=(
+                feature_indices.data_ptr(),
+                feature_values.data_ptr(),
+                max_active_features,
+                weight.data_ptr(),
+                bias.data_ptr(),
+                output.data_ptr(),
+                output_size,
+                output_size // num_threads
+            )
+        )
+
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        assert not ctx.needs_input_grad[0]
+
+        feature_indices, feature_values, weight, bias = ctx.saved_tensors
+        grad_input = grad_weight = grad_bias = None
+
+        device = feature_indices.device
+        batch_size = feature_indices.shape[0]
+        max_active_features = feature_indices.shape[1]
+        output_size = weight.shape[1]
+        num_threads = get_num_threads(output_size)
+
+        weight_grad = torch.empty(weight.shape[0], weight.shape[1], dtype=torch.float32, device=device)
+        bias_grad = torch.empty(output_size, dtype=torch.float32, device=device)
+
+        feature_transformer_slice_backward(
+            (batch_size,),
+            (num_threads,),
+            (
+                feature_indices.data_ptr(),
+                feature_values.data_ptr(),
+                max_active_features,
+                weight_grad.data_ptr(),
+                bias_grad.data_ptr(),
+                grad_output.data_ptr(),
+                output_size,
+                output_size // num_threads
+            )
+        )
+
+        return grad_input, grad_weight, grad_bias
 
 INPUT_SIZE = 40960
 BATCH_SIZE = 8192
