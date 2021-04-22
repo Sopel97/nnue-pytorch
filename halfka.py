@@ -11,9 +11,21 @@ NUM_PLANES = (NUM_SQ * NUM_PT + 1)
 def orient(is_white_pov: bool, sq: int):
   return (56 * (not is_white_pov)) ^ sq
 
+KingBuckets = [
+  9, 10, 11, 12, 12, 13, 14, 15,
+  9, 10, 11, 12, 12, 13, 14, 15,
+  7, 7, 7, 7, 8, 8, 8, 8,
+  4, 4, 4, 5, 5, 6, 6, 6,
+  4, 4, 4, 5, 5, 6, 6, 6,
+  1, 1, 1, 2, 2, 3, 3, 3,
+  1, 1, 1, 2, 2, 3, 3, 3,
+  0, 0, 0, 0, 0, 0, 0, 0
+];
+
 def halfka_idx(is_white_pov: bool, king_sq: int, sq: int, p: chess.Piece):
+  bucket = KingBuckets[king_sq]
   p_idx = (p.piece_type - 1) * 2 + (p.color != is_white_pov)
-  return 1 + orient(is_white_pov, sq) + p_idx * NUM_SQ + king_sq * NUM_PLANES
+  return 1 + orient(is_white_pov, sq) + p_idx * NUM_SQ + bucket * NUM_PLANES
 
 def halfka_psqts():
   # values copied from stockfish, in stockfish internal units
@@ -25,7 +37,7 @@ def halfka_psqts():
     chess.QUEEN : 2538
   }
 
-  values = [0] * (NUM_PLANES * NUM_SQ)
+  values = [0] * (NUM_PLANES * NUM_SQ // 4)
 
   for ksq in range(64):
     for s in range(64):
@@ -39,7 +51,7 @@ def halfka_psqts():
 
 class Features(FeatureBlock):
   def __init__(self):
-    super(Features, self).__init__('HalfKA', 0x5f134cb8, OrderedDict([('HalfKA', NUM_PLANES * NUM_SQ)]))
+    super(Features, self).__init__('HalfKA', 0x5f134cb8, OrderedDict([('HalfKA', NUM_PLANES * NUM_SQ // 4)]))
 
   def get_active_features(self, board: chess.Board):
     def piece_features(turn):
@@ -54,7 +66,7 @@ class Features(FeatureBlock):
 
 class FactorizedFeatures(FeatureBlock):
   def __init__(self):
-    super(FactorizedFeatures, self).__init__('HalfKA^', 0x5f134cb8, OrderedDict([('HalfKA', NUM_PLANES * NUM_SQ), ('A', NUM_SQ * NUM_PT)]))
+    super(FactorizedFeatures, self).__init__('HalfKA^', 0x5f134cb8, OrderedDict([('HalfKA', NUM_PLANES * NUM_SQ // 4), ('A', NUM_SQ * NUM_PT)]))
 
   def get_active_features(self, board: chess.Board):
     raise Exception('Not supported yet, you must use the c++ data loader for factorizer support during training')

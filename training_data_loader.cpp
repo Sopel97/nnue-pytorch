@@ -154,14 +154,26 @@ struct HalfKA {
     static constexpr int NUM_SQ = 64;
     static constexpr int NUM_PT = 12;
     static constexpr int NUM_PLANES = (NUM_SQ * NUM_PT + 1);
-    static constexpr int INPUTS = NUM_PLANES * NUM_SQ;
+    static constexpr int INPUTS = NUM_PLANES * NUM_SQ / 4;
 
     static constexpr int MAX_ACTIVE_FEATURES = 32;
 
+    static constexpr int KingBuckets[64] = {
+      9, 10, 11, 12, 12, 13, 14, 15,
+      9, 10, 11, 12, 12, 13, 14, 15,
+      7, 7, 7, 7, 8, 8, 8, 8,
+      4, 4, 4, 5, 5, 6, 6, 6,
+      4, 4, 4, 5, 5, 6, 6, 6,
+      1, 1, 1, 2, 2, 3, 3, 3,
+      1, 1, 1, 2, 2, 3, 3, 3,
+      0, 0, 0, 0, 0, 0, 0, 0
+    };
+
     static int feature_index(Color color, Square ksq, Square sq, Piece p)
     {
+        const int bucket = KingBuckets[static_cast<int>(ksq)];
         auto p_idx = static_cast<int>(p.type()) * 2 + (p.color() != color);
-        return 1 + static_cast<int>(orient_flip(color, sq)) + p_idx * NUM_SQ + static_cast<int>(ksq) * NUM_PLANES;
+        return 1 + static_cast<int>(orient_flip(color, sq)) + p_idx * NUM_SQ + bucket * NUM_PLANES;
     }
 
     static int fill_features_sparse(int i, const TrainingDataEntry& e, int* features, float* values, int& counter, Color color)
