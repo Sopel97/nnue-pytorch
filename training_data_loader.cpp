@@ -154,19 +154,19 @@ struct HalfKA {
     static constexpr int NUM_SQ = 64;
     static constexpr int NUM_PT = 12;
     static constexpr int NUM_PLANES = (NUM_SQ * NUM_PT + 1);
-    static constexpr int INPUTS = NUM_PLANES * NUM_SQ / 4;
+    static constexpr int INPUTS = NUM_PLANES * NUM_SQ / 2;
 
     static constexpr int MAX_ACTIVE_FEATURES = 32;
 
     static constexpr int KingBuckets[64] = {
-      9, 10, 11, 12, 12, 13, 14, 15,
-      9, 10, 11, 12, 12, 13, 14, 15,
-      7, 7, 7, 7, 8, 8, 8, 8,
-      4, 4, 4, 5, 5, 6, 6, 6,
-      4, 4, 4, 5, 5, 6, 6, 6,
-      1, 1, 1, 2, 2, 3, 3, 3,
-      1, 1, 1, 2, 2, 3, 3, 3,
-      0, 0, 0, 0, 0, 0, 0, 0
+        24, 25, 26, 27, 28, 29, 30, 31,
+        16, 17, 18, 19, 20, 21, 22, 23,
+        12, 12, 13, 13, 14, 14, 15, 15,
+         8,  8,  9,  9, 10, 10, 11, 11,
+         4,  4,  5,  5,  6,  6,  7,  7,
+         4,  4,  5,  5,  6,  6,  7,  7,
+         0,  0,  1,  1,  2,  2,  3,  3,
+         0,  0,  1,  1,  2,  2,  3,  3
     };
 
     static int feature_index(Color color, Square ksq, Square sq, Piece p)
