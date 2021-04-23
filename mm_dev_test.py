@@ -5,8 +5,26 @@ import time
 import cupy as cp
 import sys
 import math
+import os
 
-feature_transformer_slice_forward = cp.RawKernel(r'''
+feature_transformer_slice_forward_kernel_cache = dict()
+
+def make_feature_transformer_slice_forward_kernel(max_active_features, output_thread_slice_size):
+    '''
+        @param: max_active_features
+            The maximum number of features that are active
+            (non-zero) for a single position. This value determines
+            the shape of the inputs.
+            This value is of type uint32_t.
+
+        @param: output_thread_slice_size
+            The number of output elements to be processed by a single thread.
+            It is assumed that N * output_thread_slice_size == output_size,
+            where N is the number of threads with which this kernel is launched.
+    '''
+    key = (max_active_features, output_thread_slice_size)
+    if key not in feature_transformer_slice_forward_kernel_cache:
+        kernel = cp.RawKernel(r'''
 
 typedef unsigned int uint32_t;
 typedef int int32_t;
@@ -35,12 +53,6 @@ extern "C" __global__
         containing the values (arity) of the corresponding
         feature index in feature_indices.
         The type for the feature value (arity) is float32.
-
-    @param: max_active_features
-        The maximum number of features that are active
-        (non-zero) for a single position. This value determines
-        the shape of the inputs.
-        This value is of type uint32_t.
 
     @param: weight
         The weight matrix of shape (NUM_INPUTS, output_size).
@@ -60,54 +72,72 @@ extern "C" __global__
         The number of outputs. Must match the shape of weights
         and biases.
         This value is of type uint32.
-
-    @param: output_thread_slice_size
-        The number of output elements to be processed by a single thread.
-        It is assumed that N * output_thread_slice_size == output_size,
-        where N is the number of threads with which this kernel is launched.
 */
 void feature_transformer_slice_forward(
     const int32_t* const feature_indices,
     const float*   const feature_values,
-    const int32_t        max_active_features,
     const float*   const weight,
     const float*   const bias,
           float*   const output,
-    const uint32_t       output_size,
-    const uint32_t       output_thread_slice_size
-) {
+    const uint32_t       output_size
+) {{
     const uint32_t       block_idx         = blockIdx.x;
-    const uint32_t       slice_offset      = threadIdx.x * output_thread_slice_size;
+    const uint32_t       slice_offset      = threadIdx.x * {output_thread_slice_size};
 
           float*   const output_slice      = output + block_idx * output_size + slice_offset;
     const float*   const bias_slice        = bias                             + slice_offset;
 
-    const int32_t* const feature_index_row = feature_indices + block_idx * max_active_features;
-    const float*   const feature_value_row = feature_values  + block_idx * max_active_features;
+    const int32_t* const feature_index_row = feature_indices + block_idx * {max_active_features};
+    const float*   const feature_value_row = feature_values  + block_idx * {max_active_features};
 
-    for (uint32_t s = 0; s < output_thread_slice_size; ++s)
-    {
+    #pragma unroll
+    for (uint32_t s = 0; s < {output_thread_slice_size}; ++s)
+    {{
         output_slice[s] = bias_slice[s];
-    }
+    }}
 
-    for (uint32_t k = 0; k < max_active_features; ++k)
-    {
+    #pragma unroll
+    for (uint32_t k = 0; k < {max_active_features}; ++k)
+    {{
         const int32_t feature_index = feature_index_row[k];
         const float   feature_value = feature_value_row[k];
         if (feature_index != -1)
-        {
+        {{
             const float* const weight_slice = weight + feature_index * output_size + slice_offset;
-            for (uint32_t s = 0; s < output_thread_slice_size; ++s)
-            {
+            #pragma unroll
+            for (uint32_t s = 0; s < {output_thread_slice_size}; ++s)
+            {{
                 output_slice[s] += weight_slice[s] * feature_value;
-            }
-        }
-    }
-}
+            }}
+        }}
+    }}
+}}
 
-''', 'feature_transformer_slice_forward')
+'''.format(
+                max_active_features=max_active_features,
+                output_thread_slice_size=output_thread_slice_size),
+            'feature_transformer_slice_forward')
+        kernel.compile()
+        feature_transformer_slice_forward_kernel_cache[key] = kernel
+    return feature_transformer_slice_forward_kernel_cache[key]
 
-feature_transformer_slice_backward = cp.RawKernel(r'''
+feature_transformer_slice_backward_kernel_cache = dict()
+def make_feature_transformer_slice_backward_kernel(max_active_features, output_thread_slice_size):
+    ''''
+        @param: max_active_features
+            The maximum number of features that are active
+            (non-zero) for a single position. This value determines
+            the shape of the inputs.
+            This value is of type uint32_t.
+
+        @param: output_thread_slice_size
+            The number of output elements to be processed by a single thread.
+            It is assumed that N * output_thread_slice_size == output_size,
+            where N is the number of threads with which this kernel is launched.
+    '''
+    key = (max_active_features, output_thread_slice_size)
+    if key not in feature_transformer_slice_backward_kernel_cache:
+        kernel = cp.RawKernel(r'''
 
 typedef unsigned int uint32_t;
 typedef int int32_t;
@@ -135,12 +165,6 @@ extern "C" __global__
         containing the values (arity) of the corresponding
         feature index in feature_indices.
         The type for the feature value (arity) is float32.
-
-    @param: max_active_features
-        The maximum number of features that are active
-        (non-zero) for a single position. This value determines
-        the shape of the inputs.
-        This value is of type uint32_t.
 
     @param: weight_grad
         The weight gradient matrix of shape (NUM_INPUTS, output_size).
@@ -162,52 +186,54 @@ extern "C" __global__
         The number of outputs. Must match the shape of weights
         and biases.
         This value is of type uint32.
-
-    @param: output_thread_slice_size
-        The number of output elements to be processed by a single thread.
-        It is assumed that N * output_thread_slice_size == output_size,
-        where N is the number of threads with which this kernel is launched.
 */
 void feature_transformer_slice_backward(
     const int32_t* const feature_indices,
     const float*   const feature_values,
-    const int32_t        max_active_features,
           float*   const weight_grad,
           float*   const bias_grad,
     const float*   const output_grad,
-    const uint32_t       output_size,
-    const uint32_t       output_thread_slice_size
-) {
+    const uint32_t       output_size
+) {{
     const uint32_t       block_idx         = blockIdx.x;
-    const uint32_t       slice_offset      = threadIdx.x * output_thread_slice_size;
+    const uint32_t       slice_offset      = threadIdx.x * {output_thread_slice_size};
 
     const float*   const output_grad_slice = output_grad + block_idx * output_size + slice_offset;
           float*   const bias_grad_slice   = bias_grad                             + slice_offset;
 
-    const int32_t* const feature_index_row = feature_indices + block_idx * max_active_features;
-    const float*   const feature_value_row = feature_values  + block_idx * max_active_features;
+    const int32_t* const feature_index_row = feature_indices + block_idx * {max_active_features};
+    const float*   const feature_value_row = feature_values  + block_idx * {max_active_features};
 
-    for (uint32_t s = 0; s < output_thread_slice_size; ++s)
-    {
+    #pragma unroll
+    for (uint32_t s = 0; s < {output_thread_slice_size}; ++s)
+    {{
         atomicAdd(&bias_grad_slice[s], output_grad_slice[s]);
-    }
+    }}
 
-    for (uint32_t k = 0; k < max_active_features; ++k) {
+    #pragma unroll
+    for (uint32_t k = 0; k < {max_active_features}; ++k)
+    {{
         const int32_t feature_index = feature_index_row[k];
         const float   feature_value = feature_value_row[k];
-        if (feature_index != -1) {
+        if (feature_index != -1)
+        {{
             float* const weight_grad_slice = weight_grad + feature_index * output_size + slice_offset;
-            for (int s = 0; s < output_thread_slice_size; ++s) {
+            #pragma unroll
+            for (int s = 0; s < {output_thread_slice_size}; ++s)
+            {{
                 atomicAdd(&weight_grad_slice[s], output_grad_slice[s] * feature_value);
-            }
-        }
-    }
-}
+            }}
+        }}
+    }}
+}}
 
-''', 'feature_transformer_slice_backward')
-
-feature_transformer_slice_forward.compile(sys.stdout)
-feature_transformer_slice_backward.compile(sys.stdout)
+'''.format(
+                max_active_features=max_active_features,
+                output_thread_slice_size=output_thread_slice_size),
+            'feature_transformer_slice_backward')
+        kernel.compile()
+        feature_transformer_slice_backward_kernel_cache[key] = kernel
+    return feature_transformer_slice_backward_kernel_cache[key]
 
 def find_nearest_divisor(value, target):
     divisors = []
@@ -267,18 +293,17 @@ class FeatureTransformerSliceFunction(autograd.Function):
 
         output = torch.empty(batch_size, output_size, dtype=torch.float32, device=device, requires_grad=True)
 
-        feature_transformer_slice_forward(
+        kernel = make_feature_transformer_slice_forward_kernel(max_active_features, output_size // num_threads)
+        kernel(
             grid=(batch_size,),
             block=(num_threads,),
             args=(
                 feature_indices.data_ptr(),
                 feature_values.data_ptr(),
-                max_active_features,
                 weight.data_ptr(),
                 bias.data_ptr(),
                 output.data_ptr(),
-                output_size,
-                output_size // num_threads
+                output_size
             )
         )
 
@@ -302,18 +327,17 @@ class FeatureTransformerSliceFunction(autograd.Function):
         weight_grad = torch.zeros(weight.shape[0], weight.shape[1], dtype=torch.float32, device=device)
         bias_grad = torch.zeros(output_size, dtype=torch.float32, device=device)
 
-        feature_transformer_slice_backward(
+        kernel = make_feature_transformer_slice_backward_kernel(max_active_features, output_size // num_threads)
+        kernel(
             (batch_size,),
             (num_threads,),
             (
                 feature_indices.data_ptr(),
                 feature_values.data_ptr(),
-                max_active_features,
                 weight_grad.data_ptr(),
                 bias_grad.data_ptr(),
                 grad_output.data_ptr(),
-                output_size,
-                output_size // num_threads
+                output_size
             )
         )
 
@@ -379,13 +403,17 @@ INPUT_SIZE = 40960
 BATCH_SIZE = 8192
 ITERS = 64
 STRIDE = 256
-MAX_ACTIVE_FEATURES = 32
+MAX_ACTIVE_FEATURES = 64
 
+layer = FeatureTransformerSlice(INPUT_SIZE, STRIDE).cuda()
 layer = FeatureTransformerSlice(INPUT_SIZE, STRIDE).cuda()
 indices0 = (torch.rand(BATCH_SIZE, MAX_ACTIVE_FEATURES) * INPUT_SIZE).to(dtype=torch.int32).cuda()
 values0 = torch.rand(BATCH_SIZE, MAX_ACTIVE_FEATURES, dtype=torch.float32).cuda()
 indices1 = (torch.rand(BATCH_SIZE, MAX_ACTIVE_FEATURES) * INPUT_SIZE).to(dtype=torch.int32).cuda()
 values1 = torch.rand(BATCH_SIZE, MAX_ACTIVE_FEATURES, dtype=torch.float32).cuda()
+
+output0 = layer(indices0, values0)
+output1 = layer(indices1, values1)
 
 start = time.time()
 
