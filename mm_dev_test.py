@@ -444,13 +444,11 @@ bias_grad0 = torch.zeros(STRIDE, dtype=torch.float32, device=device)
 start = time.time()
 
 for i in range(ITERS):
-    '''
     output0 = layer(indices0, values0)
     output1 = layer(indices1, values1)
 
     g = ((output0 - output1)**2).mean()
     #g.backward()
-    '''
 
     weight_grad0.zero_()
     bias_grad0.zero_()
@@ -476,7 +474,7 @@ for i in range(ITERS):
             values1.data_ptr(),
             weight_grad0.data_ptr(),
             bias_grad0.data_ptr(),
-            output0.data_ptr(),
+            output1.data_ptr(),
             STRIDE
         )
     )
