@@ -95,16 +95,16 @@ void feature_transformer_slice_forward(
     __shared__
           float          shared_output[{output_size}];
 
-    const uint32_t       block_idx         = blockIdx.x;
-    const uint32_t       slice_offset      = threadIdx.x * {output_thread_slice_size};
+    const uint32_t       block_idx           = blockIdx.x;
+    const uint32_t       slice_offset        = threadIdx.x * {output_thread_slice_size};
 
-          float*   const output_slice      = output + block_idx * output_size + slice_offset;
-    const float*   const bias_slice        = bias                             + slice_offset;
+          float*   const output_slice        = output + block_idx * output_size + slice_offset;
+    const float*   const bias_slice          = bias                             + slice_offset;
 
-    const int32_t* const feature_index_row = feature_indices + block_idx * {max_active_features};
-    const float*   const feature_value_row = feature_values  + block_idx * {max_active_features};
+    const int32_t* const feature_index_row   = feature_indices + block_idx * {max_active_features};
+    const float*   const feature_value_row   = feature_values  + block_idx * {max_active_features};
 
-    float* shared_output_slice = shared_output + slice_offset;
+          float*         shared_output_slice = shared_output + slice_offset;
 
     #pragma unroll
     for (uint32_t s = 0; s < {output_thread_slice_size}; ++s)
@@ -220,19 +220,30 @@ void feature_transformer_slice_backward(
     const float*   const output_grad,
     const uint32_t       output_size
 ) {{
-    const uint32_t       block_idx         = blockIdx.x;
-    const uint32_t       slice_offset      = threadIdx.x * {output_thread_slice_size};
+    __shared__
+          float          shared_output_grad[{output_size}];
 
-    const float*   const output_grad_slice = output_grad + block_idx * output_size + slice_offset;
-          float*   const bias_grad_slice   = bias_grad                             + slice_offset;
+    const uint32_t       block_idx                = blockIdx.x;
+    const uint32_t       slice_offset             = threadIdx.x * {output_thread_slice_size};
 
-    const int32_t* const feature_index_row = feature_indices + block_idx * {max_active_features};
-    const float*   const feature_value_row = feature_values  + block_idx * {max_active_features};
+    const float*   const output_grad_slice        = output_grad + block_idx * output_size + slice_offset;
+          float*   const bias_grad_slice          = bias_grad                             + slice_offset;
+
+    const int32_t* const feature_index_row        = feature_indices + block_idx * {max_active_features};
+    const float*   const feature_value_row        = feature_values  + block_idx * {max_active_features};
+
+          float*         shared_output_grad_slice = shared_output_grad + slice_offset;
 
     #pragma unroll
     for (uint32_t s = 0; s < {output_thread_slice_size}; ++s)
     {{
-        atomicAdd(&bias_grad_slice[s], output_grad_slice[s]);
+        shared_output_grad_slice[s] = output_grad_slice[s];
+    }}
+
+    #pragma unroll
+    for (uint32_t s = 0; s < {output_thread_slice_size}; ++s)
+    {{
+        atomicAdd(&bias_grad_slice[s], shared_output_grad_slice[s]);
     }}
 
     #pragma unroll
@@ -246,7 +257,7 @@ void feature_transformer_slice_backward(
             #pragma unroll
             for (int s = 0; s < {output_thread_slice_size}; ++s)
             {{
-                atomicAdd(&weight_grad_slice[s], output_grad_slice[s] * feature_value);
+                atomicAdd(&weight_grad_slice[s], shared_output_grad_slice[s] * feature_value);
             }}
         }}
     }}
@@ -254,7 +265,8 @@ void feature_transformer_slice_backward(
 
 '''.format(
                 max_active_features=max_active_features,
-                output_thread_slice_size=output_thread_slice_size),
+                output_thread_slice_size=output_thread_slice_size,
+                output_size=output_size),
             'feature_transformer_slice_backward')
         kernel.compile()
         feature_transformer_slice_backward_kernel_cache[key] = run_kernel_with_threads(kernel, (num_threads,))
@@ -427,14 +439,49 @@ values1 = torch.rand(BATCH_SIZE, MAX_ACTIVE_FEATURES, dtype=torch.float32).cuda(
 output0 = layer(indices0, values0)
 output1 = layer(indices1, values1)
 
+device = indices0.device
+weight_grad0 = torch.zeros(layer.weight.shape[0], layer.weight.shape[1], dtype=torch.float32, device=device)
+bias_grad0 = torch.zeros(STRIDE, dtype=torch.float32, device=device)
+
 start = time.time()
 
 for i in range(ITERS):
+    '''
     output0 = layer(indices0, values0)
     output1 = layer(indices1, values1)
 
     g = ((output0 - output1)**2).mean()
     #g.backward()
+    '''
+
+    weight_grad0.zero_()
+    bias_grad0.zero_()
+    kernel = make_feature_transformer_slice_backward_kernel(MAX_ACTIVE_FEATURES, STRIDE)
+    kernel(
+        grid=(BATCH_SIZE,),
+        args=(
+            indices0.data_ptr(),
+            values0.data_ptr(),
+            weight_grad0.data_ptr(),
+            bias_grad0.data_ptr(),
+            output0.data_ptr(),
+            STRIDE
+        )
+    )
+
+    weight_grad0.zero_()
+    bias_grad0.zero_()
+    kernel(
+        grid=(BATCH_SIZE,),
+        args=(
+            indices1.data_ptr(),
+            values1.data_ptr(),
+            weight_grad0.data_ptr(),
+            bias_grad0.data_ptr(),
+            output0.data_ptr(),
+            STRIDE
+        )
+    )
 
     torch.cuda.synchronize()
 
