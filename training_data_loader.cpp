@@ -314,6 +314,96 @@ struct HalfKA_PC20Factorized {
     }
 };
 
+struct HalfKA_PC_24_16 {
+    static constexpr int NUM_SQ = 64;
+    static constexpr int NUM_PT = 12;
+    static constexpr int NUM_PLANES = (NUM_SQ * NUM_PT + 1);
+    static constexpr int INPUTS = NUM_PLANES * NUM_SQ * 3;
+
+    static constexpr int BucketId[33] = {
+      0,
+      0, 0, 0, 0, 0, 0, 0, 0,
+      0, 0, 0, 0, 0, 0, 0, 0,
+      1, 1, 1, 1, 1, 1, 1, 1,
+      2, 2, 2, 2, 2, 2, 2, 2
+    };
+    static constexpr int MAX_ACTIVE_FEATURES = 32;
+
+    static int feature_index(Color color, Square ksq, Square sq, Piece p, int pc)
+    {
+        auto p_idx = static_cast<int>(p.type()) * 2 + (p.color() != color);
+        return 1 + static_cast<int>(orient_flip(color, sq)) + p_idx * NUM_SQ + static_cast<int>(ksq) * NUM_PLANES
+               + NUM_PLANES * NUM_SQ * BucketId[pc];
+    }
+
+    static int fill_features_sparse(int i, const TrainingDataEntry& e, int* features, float* values, int& counter, Color color)
+    {
+        auto& pos = e.pos;
+        auto pieces = pos.piecesBB();
+        auto ksq = pos.kingSquare(color);
+
+        // We order the features so that the resulting sparse
+        // tensor is coalesced.
+        int features_unordered[32];
+        int j = 0;
+        int pc = pos.piecesBB().count();
+        for(Square sq : pieces)
+        {
+            auto p = pos.pieceAt(sq);
+            features_unordered[j++] = feature_index(color, orient_flip(color, ksq), sq, p, pc);
+        }
+        std::sort(features_unordered, features_unordered + j);
+        for (int k = 0; k < j; ++k)
+        {
+            int idx = counter * 2;
+            features[idx] = i;
+            features[idx + 1] = features_unordered[k];
+            values[counter] = 1.0f;
+            counter += 1;
+        }
+        return INPUTS;
+    }
+};
+
+struct HalfKA_PC_24_16Factorized {
+    // Factorized features
+    static constexpr int PIECE_INPUTS = HalfKA_PC_24_16::NUM_SQ * HalfKA_PC_24_16::NUM_PT;
+    static constexpr int INPUTS = HalfKA_PC_24_16::INPUTS + PIECE_INPUTS;
+
+    static constexpr int MAX_PIECE_FEATURES = 32;
+    static constexpr int MAX_ACTIVE_FEATURES = HalfKA_PC_24_16::MAX_ACTIVE_FEATURES + MAX_PIECE_FEATURES;
+
+    static void fill_features_sparse(int i, const TrainingDataEntry& e, int* features, float* values, int& counter, Color color)
+    {
+        auto counter_before = counter;
+        int offset = HalfKA_PC_24_16::fill_features_sparse(i, e, features, values, counter, color);
+        auto& pos = e.pos;
+        auto pieces = pos.piecesBB();
+
+        // We order the features so that the resulting sparse
+        // tensor is coalesced. Note that we can just sort
+        // the parts where values are all 1.0f and leave the
+        // halfk feature where it was.
+        int features_unordered[32];
+        int j = 0;
+        for(Square sq : pieces)
+        {
+            auto p = pos.pieceAt(sq);
+            auto p_idx = static_cast<int>(p.type()) * 2 + (p.color() != color);
+            features_unordered[j++] = offset + (p_idx * HalfKA_PC_24_16::NUM_SQ) + static_cast<int>(orient_flip(color, sq));
+        }
+        std::sort(features_unordered, features_unordered + j);
+        for (int k = 0; k < j; ++k)
+        {
+            int idx = counter * 2;
+            features[idx] = i;
+            features[idx + 1] = features_unordered[k];
+            values[counter] = 1.0f;
+            counter += 1;
+        }
+    }
+};
+
 template <typename T, typename... Ts>
 struct FeatureSet
 {
@@ -628,6 +718,14 @@ extern "C" {
         {
             return new SparseBatch(FeatureSet<HalfKA_PC20Factorized>{}, entries);
         }
+        else if (feature_set == "HalfKA_PC_24_16")
+        {
+            return new SparseBatch(FeatureSet<HalfKA_PC_24_16>{}, entries);
+        }
+        else if (feature_set == "HalfKA_PC_24_16^")
+        {
+            return new SparseBatch(FeatureSet<HalfKA_PC_24_16Factorized>{}, entries);
+        }
         fprintf(stderr, "Unknown feature_set %s\n", feature_set_c);
         return nullptr;
     }
@@ -682,6 +780,14 @@ extern "C" {
         else if (feature_set == "HalfKA_PC20^")
         {
             return new FeaturedBatchStream<FeatureSet<HalfKA_PC20Factorized>, SparseBatch>(concurrency, filename, batch_size, cyclic, skipPredicate);
+        }
+        else if (feature_set == "HalfKA_PC_24_16")
+        {
+            return new FeaturedBatchStream<FeatureSet<HalfKA_PC_24_16>, SparseBatch>(concurrency, filename, batch_size, cyclic, skipPredicate);
+        }
+        else if (feature_set == "HalfKA_PC_24_16^")
+        {
+            return new FeaturedBatchStream<FeatureSet<HalfKA_PC_24_16Factorized>, SparseBatch>(concurrency, filename, batch_size, cyclic, skipPredicate);
         }
         fprintf(stderr, "Unknown feature_set %s\n", feature_set_c);
         return nullptr;
