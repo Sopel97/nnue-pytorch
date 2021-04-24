@@ -7,9 +7,23 @@ import sys
 import math
 import os
 
+optimal_num_threads = 256
+num_threads_cache = dict()
+
+def get_num_threads(output_size):
+    if output_size not in num_threads_cache:
+        num_threads_cache[output_size] = find_nearest_divisor(output_size, optimal_num_threads)
+
+    return num_threads_cache[output_size]
+
+def run_kernel_with_threads(kernel, threads):
+    def f(grid, args):
+        kernel(grid=grid, block=threads, args=args)
+    return f
+
 feature_transformer_slice_forward_kernel_cache = dict()
 
-def make_feature_transformer_slice_forward_kernel(max_active_features, output_thread_slice_size):
+def make_feature_transformer_slice_forward_kernel(max_active_features, output_size):
     '''
         @param: max_active_features
             The maximum number of features that are active
@@ -17,12 +31,14 @@ def make_feature_transformer_slice_forward_kernel(max_active_features, output_th
             the shape of the inputs.
             This value is of type uint32_t.
 
-        @param: output_thread_slice_size
-            The number of output elements to be processed by a single thread.
-            It is assumed that N * output_thread_slice_size == output_size,
-            where N is the number of threads with which this kernel is launched.
+        @param: output_size
+            The number of outputs. Must match the shape of weights
+            and biases.
+            This value is of type uint32.
     '''
-    key = (max_active_features, output_thread_slice_size)
+    num_threads = get_num_threads(output_size)
+    output_thread_slice_size = output_size // num_threads
+    key = (max_active_features, output_size, num_threads)
     if key not in feature_transformer_slice_forward_kernel_cache:
         kernel = cp.RawKernel(r'''
 
@@ -67,11 +83,6 @@ extern "C" __global__
         It may not be initialized, bias is always copied
         to the output first.
         Output values must have type float32.
-
-    @param: output_size
-        The number of outputs. Must match the shape of weights
-        and biases.
-        This value is of type uint32.
 */
 void feature_transformer_slice_forward(
     const int32_t* const feature_indices,
@@ -81,6 +92,8 @@ void feature_transformer_slice_forward(
           float*   const output,
     const uint32_t       output_size
 ) {{
+    extern __shared__ float shared_output[{output_size}];
+
     const uint32_t       block_idx         = blockIdx.x;
     const uint32_t       slice_offset      = threadIdx.x * {output_thread_slice_size};
 
@@ -90,10 +103,12 @@ void feature_transformer_slice_forward(
     const int32_t* const feature_index_row = feature_indices + block_idx * {max_active_features};
     const float*   const feature_value_row = feature_values  + block_idx * {max_active_features};
 
+    float* shared_output_slice = shared_output + slice_offset;
+
     #pragma unroll
     for (uint32_t s = 0; s < {output_thread_slice_size}; ++s)
     {{
-        output_slice[s] = bias_slice[s];
+        shared_output_slice[s] = bias_slice[s];
     }}
 
     #pragma unroll
@@ -107,22 +122,29 @@ void feature_transformer_slice_forward(
             #pragma unroll
             for (uint32_t s = 0; s < {output_thread_slice_size}; ++s)
             {{
-                output_slice[s] += weight_slice[s] * feature_value;
+                shared_output_slice[s] += weight_slice[s] * feature_value;
             }}
         }}
+    }}
+
+    #pragma unroll
+    for (uint32_t s = 0; s < {output_thread_slice_size}; ++s)
+    {{
+        output_slice[s] = shared_output_slice[s];
     }}
 }}
 
 '''.format(
                 max_active_features=max_active_features,
-                output_thread_slice_size=output_thread_slice_size),
+                output_thread_slice_size=output_thread_slice_size,
+                output_size=output_size),
             'feature_transformer_slice_forward')
         kernel.compile()
-        feature_transformer_slice_forward_kernel_cache[key] = kernel
+        feature_transformer_slice_forward_kernel_cache[key] = run_kernel_with_threads(kernel, (num_threads,))
     return feature_transformer_slice_forward_kernel_cache[key]
 
 feature_transformer_slice_backward_kernel_cache = dict()
-def make_feature_transformer_slice_backward_kernel(max_active_features, output_thread_slice_size):
+def make_feature_transformer_slice_backward_kernel(max_active_features, output_size):
     ''''
         @param: max_active_features
             The maximum number of features that are active
@@ -130,12 +152,14 @@ def make_feature_transformer_slice_backward_kernel(max_active_features, output_t
             the shape of the inputs.
             This value is of type uint32_t.
 
-        @param: output_thread_slice_size
-            The number of output elements to be processed by a single thread.
-            It is assumed that N * output_thread_slice_size == output_size,
-            where N is the number of threads with which this kernel is launched.
+        @param: output_size
+            The number of outputs. Must match the shape of weights
+            and biases.
+            This value is of type uint32.
     '''
-    key = (max_active_features, output_thread_slice_size)
+    num_threads = get_num_threads(output_size)
+    output_thread_slice_size = output_size // num_threads
+    key = (max_active_features, output_size, num_threads)
     if key not in feature_transformer_slice_backward_kernel_cache:
         kernel = cp.RawKernel(r'''
 
@@ -232,7 +256,7 @@ void feature_transformer_slice_backward(
                 output_thread_slice_size=output_thread_slice_size),
             'feature_transformer_slice_backward')
         kernel.compile()
-        feature_transformer_slice_backward_kernel_cache[key] = kernel
+        feature_transformer_slice_backward_kernel_cache[key] = run_kernel_with_threads(kernel, (num_threads,))
     return feature_transformer_slice_backward_kernel_cache[key]
 
 def find_nearest_divisor(value, target):
@@ -244,15 +268,6 @@ def find_nearest_divisor(value, target):
     return divisors[0][0]
 
 class FeatureTransformerSliceFunction(autograd.Function):
-    optimal_num_threads = 256
-    num_threads_cache = dict()
-
-    @staticmethod
-    def get_num_threads(output_size):
-        if output_size not in FeatureTransformerSliceFunction.num_threads_cache:
-            FeatureTransformerSliceFunction.num_threads_cache[output_size] = find_nearest_divisor(output_size, FeatureTransformerSliceFunction.optimal_num_threads)
-
-        return FeatureTransformerSliceFunction.num_threads_cache[output_size]
 
     @staticmethod
     def forward(ctx, feature_indices, feature_values, weight, bias):
@@ -289,14 +304,12 @@ class FeatureTransformerSliceFunction(autograd.Function):
         batch_size = feature_indices.shape[0]
         max_active_features = feature_indices.shape[1]
         output_size = weight.shape[1]
-        num_threads = FeatureTransformerSliceFunction.get_num_threads(output_size)
 
         output = torch.empty(batch_size, output_size, dtype=torch.float32, device=device, requires_grad=True)
 
-        kernel = make_feature_transformer_slice_forward_kernel(max_active_features, output_size // num_threads)
+        kernel = make_feature_transformer_slice_forward_kernel(max_active_features, output_size)
         kernel(
             grid=(batch_size,),
-            block=(num_threads,),
             args=(
                 feature_indices.data_ptr(),
                 feature_values.data_ptr(),
@@ -322,16 +335,14 @@ class FeatureTransformerSliceFunction(autograd.Function):
         batch_size = feature_indices.shape[0]
         max_active_features = feature_indices.shape[1]
         output_size = weight.shape[1]
-        num_threads = FeatureTransformerSliceFunction.get_num_threads(output_size)
 
         weight_grad = torch.zeros(weight.shape[0], weight.shape[1], dtype=torch.float32, device=device)
         bias_grad = torch.zeros(output_size, dtype=torch.float32, device=device)
 
-        kernel = make_feature_transformer_slice_backward_kernel(max_active_features, output_size // num_threads)
+        kernel = make_feature_transformer_slice_backward_kernel(max_active_features, output_size)
         kernel(
-            (batch_size,),
-            (num_threads,),
-            (
+            grid=(batch_size,),
+            args=(
                 feature_indices.data_ptr(),
                 feature_values.data_ptr(),
                 weight_grad.data_ptr(),
@@ -403,7 +414,7 @@ INPUT_SIZE = 40960
 BATCH_SIZE = 8192
 ITERS = 64
 STRIDE = 256
-MAX_ACTIVE_FEATURES = 64
+MAX_ACTIVE_FEATURES = 32
 
 layer = FeatureTransformerSlice(INPUT_SIZE, STRIDE).cuda()
 layer = FeatureTransformerSlice(INPUT_SIZE, STRIDE).cuda()
@@ -422,7 +433,7 @@ for i in range(ITERS):
     output1 = layer(indices1, values1)
 
     g = ((output0 - output1)**2).mean()
-    g.backward()
+    #g.backward()
 
     torch.cuda.synchronize()
 
