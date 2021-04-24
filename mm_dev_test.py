@@ -100,11 +100,10 @@ void feature_transformer_slice_forward(
 
           float*   const output_slice        = output + block_idx * output_size + slice_offset;
     const float*   const bias_slice          = bias                             + slice_offset;
+          float*         shared_output_slice = shared_output                    + slice_offset;
 
     const int32_t* const feature_index_row   = feature_indices + block_idx * {max_active_features};
     const float*   const feature_value_row   = feature_values  + block_idx * {max_active_features};
-
-          float*         shared_output_slice = shared_output + slice_offset;
 
     #pragma unroll
     for (uint32_t s = 0; s < {output_thread_slice_size}; ++s)
@@ -228,11 +227,10 @@ void feature_transformer_slice_backward(
 
     const float*   const output_grad_slice        = output_grad + block_idx * output_size + slice_offset;
           float*   const bias_grad_slice          = bias_grad                             + slice_offset;
+          float*         shared_output_grad_slice = shared_output_grad                    + slice_offset;
 
     const int32_t* const feature_index_row        = feature_indices + block_idx * {max_active_features};
     const float*   const feature_value_row        = feature_values  + block_idx * {max_active_features};
-
-          float*         shared_output_grad_slice = shared_output_grad + slice_offset;
 
     #pragma unroll
     for (uint32_t s = 0; s < {output_thread_slice_size}; ++s)
