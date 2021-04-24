@@ -454,6 +454,7 @@ for i in range(ITERS):
     g = ((output0 - output1)**2).mean()
     #g.backward()
 
+    # obviously not correct but good for optimising
     weight_grad0.zero_()
     bias_grad0.zero_()
     kernel = make_feature_transformer_slice_backward_kernel(MAX_ACTIVE_FEATURES, STRIDE)
@@ -485,8 +486,11 @@ for i in range(ITERS):
 
     torch.cuda.synchronize()
 
-for param in layer.parameters():
-    print(param.grad)
-
 end = time.time()
+
+#for param in layer.parameters():
+#    print(param.grad)
+print(weight_grad0)
+print(bias_grad0)
+
 print((ITERS * BATCH_SIZE) / (end - start))
