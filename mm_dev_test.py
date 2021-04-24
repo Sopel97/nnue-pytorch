@@ -57,7 +57,8 @@ extern "C" __global__
         A matrix of shape (BATCH_SIZE, max_active_features)
         containing indices of active features for each position
         in a batch. Feature index of -1 means that the slot is empty
-        and the weights will not be accumulated for it.
+        and the weights will not be accumulated for it. Moreover
+        no further indices from this block will be considered.
         The indices form an implicit matrix of shape
         (BATCH_SIZE, NUM_INPUTS), where the first dimension index is
         inferred from the memory location (BATCH_SIZE), and the
@@ -124,7 +125,7 @@ void feature_transformer_slice_forward(
             {{
                 shared_output_slice[s] += weight_slice[s] * feature_value;
             }}
-        }}
+        }} else break;
     }}
 
     #pragma unroll
@@ -177,7 +178,8 @@ extern "C" __global__
         A matrix of shape (BATCH_SIZE, max_active_features)
         containing indices of active features for each position
         in a batch. Feature index of -1 means that the slot is empty
-        and the weights will not be accumulated for it.
+        and the weights will not be accumulated for it. Moreover
+        no further indices from this block will be considered.
         The indices form an implicit matrix of shape
         (BATCH_SIZE, NUM_INPUTS), where the first dimension index is
         inferred from the memory location (BATCH_SIZE), and the
@@ -257,7 +259,7 @@ void feature_transformer_slice_backward(
             {{
                 atomicAdd(&weight_grad_slice[s], shared_output_grad_slice[s] * feature_value);
             }}
-        }}
+        }} else break;
     }}
 }}
 
@@ -425,13 +427,13 @@ INPUT_SIZE = 40960
 BATCH_SIZE = 8192
 ITERS = 64
 STRIDE = 256
-MAX_ACTIVE_FEATURES = 32
+MAX_ACTIVE_FEATURES = 64
 
 layer = FeatureTransformerSlice(INPUT_SIZE, STRIDE).cuda()
 layer = FeatureTransformerSlice(INPUT_SIZE, STRIDE).cuda()
-indices0 = (torch.rand(BATCH_SIZE, MAX_ACTIVE_FEATURES) * INPUT_SIZE).to(dtype=torch.int32).cuda()
+indices0 = torch.cat([(torch.rand(BATCH_SIZE, MAX_ACTIVE_FEATURES * 3 // 4) * INPUT_SIZE).to(dtype=torch.int32), torch.full((BATCH_SIZE, MAX_ACTIVE_FEATURES // 4), -1, dtype=torch.int32)], dim=1).cuda()
 values0 = torch.rand(BATCH_SIZE, MAX_ACTIVE_FEATURES, dtype=torch.float32).cuda()
-indices1 = (torch.rand(BATCH_SIZE, MAX_ACTIVE_FEATURES) * INPUT_SIZE).to(dtype=torch.int32).cuda()
+indices1 = torch.cat([(torch.rand(BATCH_SIZE, MAX_ACTIVE_FEATURES * 3 // 4) * INPUT_SIZE).to(dtype=torch.int32), torch.full((BATCH_SIZE, MAX_ACTIVE_FEATURES // 4), -1, dtype=torch.int32)], dim=1).cuda()
 values1 = torch.rand(BATCH_SIZE, MAX_ACTIVE_FEATURES, dtype=torch.float32).cuda()
 
 output0 = layer(indices0, values0)
