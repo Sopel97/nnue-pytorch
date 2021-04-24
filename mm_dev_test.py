@@ -249,7 +249,11 @@ void feature_transformer_slice_backward(
     #pragma unroll
     for (uint32_t s = 0; s < {output_thread_slice_size}; ++s)
     {{
-        atomicAdd(&bias_grad_slice[s], shared_output_grad_slice[s]);
+        const float sog = shared_output_grad_slice[s];
+        if (sog != 0.0f)
+        {{
+            atomicAdd(&bias_grad_slice[s], sog);
+        }}
     }}
 
     #pragma unroll
@@ -263,7 +267,11 @@ void feature_transformer_slice_backward(
             #pragma unroll
             for (int s = 0; s < {output_thread_slice_size}; ++s)
             {{
-                atomicAdd(&weight_grad_slice[s], shared_output_grad_slice[s] * feature_value);
+                const float sog = shared_output_grad_slice[s];
+                if (sog != 0.0f)
+                {{
+                    atomicAdd(&weight_grad_slice[s], sog * feature_value);
+                }}
             }}
         }} else break;
     }}
