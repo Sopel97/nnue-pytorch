@@ -213,11 +213,6 @@ extern "C" __global__
     @param: output_grad
         An output gradient matrix of shape (BATCH_SIZE, output_size).
         Output values must have type float32.
-
-    @param: output_size
-        The number of outputs. Must match the shape of weights
-        and biases.
-        This value is of type uint32.
 */
 void feature_transformer_slice_backward(
     const int32_t* const feature_indices,
