@@ -10,6 +10,14 @@ import os
 optimal_num_threads = 256
 num_threads_cache = dict()
 
+def find_nearest_divisor(value, target):
+    divisors = []
+    for i in range(1, value+1):
+        if value % i == 0:
+            divisors.append((i, abs(target-i)))
+    divisors.sort(key=lambda x:x[1])
+    return divisors[0][0]
+
 def get_num_threads(output_size):
     if output_size not in num_threads_cache:
         num_threads_cache[output_size] = find_nearest_divisor(output_size, optimal_num_threads)
@@ -90,8 +98,7 @@ void feature_transformer_slice_forward(
     const float*   const feature_values,
     const float*   const weight,
     const float*   const bias,
-          float*   const output,
-    const uint32_t       output_size
+          float*   const output
 ) {{
     __shared__
           float          shared_output[{output_size}];
@@ -99,9 +106,9 @@ void feature_transformer_slice_forward(
     const uint32_t       block_idx           = blockIdx.x;
     const uint32_t       slice_offset        = threadIdx.x * {output_thread_slice_size};
 
-          float*   const output_slice        = output + block_idx * output_size + slice_offset;
-    const float*   const bias_slice          = bias                             + slice_offset;
-          float*         shared_output_slice = shared_output                    + slice_offset;
+          float*   const output_slice        = output + block_idx * {output_size} + slice_offset;
+    const float*   const bias_slice          = bias                               + slice_offset;
+          float*         shared_output_slice = shared_output                      + slice_offset;
 
     const int32_t* const feature_index_row   = feature_indices + block_idx * {max_active_features};
     const float*   const feature_value_row   = feature_values  + block_idx * {max_active_features};
@@ -119,7 +126,7 @@ void feature_transformer_slice_forward(
         const float   feature_value = feature_value_row[k];
         if (feature_index != -1)
         {{
-            const float* const weight_slice = weight + feature_index * output_size + slice_offset;
+            const float* const weight_slice = weight + feature_index * {output_size} + slice_offset;
             #pragma unroll
             for (uint32_t s = 0; s < {output_thread_slice_size}; ++s)
             {{
@@ -218,8 +225,7 @@ void feature_transformer_slice_backward(
     const float*   const feature_values,
           float*   const weight_grad,
           float*   const bias_grad,
-    const float*   const output_grad,
-    const uint32_t       output_size
+    const float*   const output_grad
 ) {{
     __shared__
           float          shared_output_grad[{output_size}];
@@ -227,9 +233,9 @@ void feature_transformer_slice_backward(
     const uint32_t       block_idx                = blockIdx.x;
     const uint32_t       slice_offset             = threadIdx.x * {output_thread_slice_size};
 
-    const float*   const output_grad_slice        = output_grad + block_idx * output_size + slice_offset;
-          float*   const bias_grad_slice          = bias_grad                             + slice_offset;
-          float*         shared_output_grad_slice = shared_output_grad                    + slice_offset;
+    const float*   const output_grad_slice        = output_grad + block_idx * {output_size} + slice_offset;
+          float*   const bias_grad_slice          = bias_grad                               + slice_offset;
+          float*         shared_output_grad_slice = shared_output_grad                      + slice_offset;
 
     const int32_t* const feature_index_row        = feature_indices + block_idx * {max_active_features};
     const float*   const feature_value_row        = feature_values  + block_idx * {max_active_features};
@@ -253,7 +259,7 @@ void feature_transformer_slice_backward(
         const float   feature_value = feature_value_row[k];
         if (feature_index != -1)
         {{
-            float* const weight_grad_slice = weight_grad + feature_index * output_size + slice_offset;
+            float* const weight_grad_slice = weight_grad + feature_index * {output_size} + slice_offset;
             #pragma unroll
             for (int s = 0; s < {output_thread_slice_size}; ++s)
             {{
@@ -271,14 +277,6 @@ void feature_transformer_slice_backward(
         kernel.compile()
         feature_transformer_slice_backward_kernel_cache[key] = run_kernel_with_threads(kernel, (num_threads,))
     return feature_transformer_slice_backward_kernel_cache[key]
-
-def find_nearest_divisor(value, target):
-    divisors = []
-    for i in range(1, value+1):
-        if value % i == 0:
-            divisors.append((i, abs(target-i)))
-    divisors.sort(key=lambda x:x[1])
-    return divisors[0][0]
 
 class FeatureTransformerSliceFunction(autograd.Function):
 
@@ -328,8 +326,7 @@ class FeatureTransformerSliceFunction(autograd.Function):
                 feature_values.data_ptr(),
                 weight.data_ptr(),
                 bias.data_ptr(),
-                output.data_ptr(),
-                output_size
+                output.data_ptr()
             )
         )
 
@@ -360,8 +357,7 @@ class FeatureTransformerSliceFunction(autograd.Function):
                 feature_values.data_ptr(),
                 weight_grad.data_ptr(),
                 bias_grad.data_ptr(),
-                grad_output.data_ptr(),
-                output_size
+                grad_output.data_ptr()
             )
         )
 
@@ -426,7 +422,7 @@ sys.exit(0)
 INPUT_SIZE = 40960
 BATCH_SIZE = 8192
 ITERS = 64
-STRIDE = 256
+STRIDE = 264
 MAX_ACTIVE_FEATURES = 64
 
 layer = FeatureTransformerSlice(INPUT_SIZE, STRIDE).cuda()
@@ -446,8 +442,8 @@ bias_grad0 = torch.zeros(STRIDE, dtype=torch.float32, device=device)
 start = time.time()
 
 for i in range(ITERS):
-    output0 = layer(indices0, values0)
-    output1 = layer(indices1, values1)
+    output0 = torch.clamp(layer(indices0, values0), 0.0, 1.0)
+    output1 = torch.clamp(layer(indices1, values1), 0.0, 1.0)
 
     g = ((output0 - output1)**2).mean()
     #g.backward()
