@@ -92,7 +92,8 @@ void feature_transformer_slice_forward(
           float*   const output,
     const uint32_t       output_size
 ) {{
-    extern __shared__ float shared_output[{output_size}];
+    __shared__
+          float          shared_output[{output_size}];
 
     const uint32_t       block_idx         = blockIdx.x;
     const uint32_t       slice_offset      = threadIdx.x * {output_thread_slice_size};
