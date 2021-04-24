@@ -119,7 +119,6 @@ void feature_transformer_slice_forward(
         shared_output_slice[s] = bias_slice[s];
     }}
 
-    #pragma unroll
     for (uint32_t k = 0; k < {max_active_features}; ++k)
     {{
         const int32_t feature_index = feature_index_row[k];
@@ -256,7 +255,6 @@ void feature_transformer_slice_backward(
         }}
     }}
 
-    #pragma unroll
     for (uint32_t k = 0; k < {max_active_features}; ++k)
     {{
         const int32_t feature_index = feature_index_row[k];
