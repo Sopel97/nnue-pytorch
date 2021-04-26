@@ -4,7 +4,7 @@ import torch
 import chess
 
 PSQT_BUCKETS = 8
-LS_BUCKETS = 8
+LS_BUCKETS = 32
 
 def _calculate_features_hash(features):
     if len(features) == 1:
@@ -37,7 +37,20 @@ class FeatureSet:
         self.num_ls_buckets = LS_BUCKETS
 
     def get_ls_index(self, board: chess.Board):
-        return self.get_psqt_index(board)
+        all_pieces = \
+            board.pieces(chess.PAWN, chess.WHITE) | \
+            board.pieces(chess.KNIGHT, chess.WHITE) | \
+            board.pieces(chess.BISHOP, chess.WHITE) | \
+            board.pieces(chess.ROOK, chess.WHITE) | \
+            board.pieces(chess.QUEEN, chess.WHITE) | \
+            board.pieces(chess.KING, chess.WHITE) | \
+            board.pieces(chess.PAWN, chess.BLACK) | \
+            board.pieces(chess.KNIGHT, chess.BLACK) | \
+            board.pieces(chess.BISHOP, chess.BLACK) | \
+            board.pieces(chess.ROOK, chess.BLACK) | \
+            board.pieces(chess.QUEEN, chess.BLACK) | \
+            board.pieces(chess.KING, chess.BLACK)
+        return (len(all_pieces) - 1)
 
     def get_psqt_index(self, board: chess.Board):
         all_pieces = \
