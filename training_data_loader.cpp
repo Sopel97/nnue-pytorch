@@ -313,7 +313,7 @@ private:
         outcome[i] = (e.result + 1.0f) / 2.0f;
         score[i] = e.score;
         psqt_indices[i] = (e.pos.piecesBB().count() - 1) / 4;
-        layer_stack_indices[i] = (e.pos.piecesBB().count() - 1);
+        layer_stack_indices[i] = (e.pos.piecesBB().count() - 1) / 2;
         fill_features(FeatureSet<Ts...>{}, i, e);
     }
 
