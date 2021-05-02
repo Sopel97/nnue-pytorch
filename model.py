@@ -251,7 +251,7 @@ class NNUE(pl.LightningModule):
     # Train with a lower LR on the output layer
     LR = 1e-3
     train_params = [
-      {'params' : get_parameters([self.input]), 'lr' : LR },
+      {'params' : get_parameters([self.input]), 'lr' : LR, 'gc_dim' : 0 },
       # Needs to be updated before because the l1 layer depends on it
       {'params' : [self.layer_stacks.l1_fact.weight], 'lr' : LR },
       {'params' : [self.layer_stacks.l1.weight], 'lr' : LR, 'min_weight' : -127/64, 'max_weight' : 127/64, 'virtual_params' : self.layer_stacks.l1_fact.weight },

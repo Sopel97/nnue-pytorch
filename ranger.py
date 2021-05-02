@@ -28,7 +28,7 @@ import torch
 from torch.optim.optimizer import Optimizer, required
 
 
-def centralized_gradient(x, use_gc=True, gc_conv_only=False):
+def centralized_gradient(x, dim, use_gc=True, gc_conv_only=False):
     '''credit - https://github.com/Yonghongwei/Gradient-Centralization '''
     if use_gc:
         if gc_conv_only:
@@ -36,7 +36,7 @@ def centralized_gradient(x, use_gc=True, gc_conv_only=False):
                 x.add_(-x.mean(dim=tuple(range(1, len(list(x.size())))), keepdim=True))
         else:
             if len(list(x.size())) > 1:
-                x.add_(-x.mean(dim=tuple(range(1, len(list(x.size())))), keepdim=True))
+                x.add_(-x.mean(dim=dim, keepdim=True))
     return x
 
 
@@ -68,7 +68,7 @@ class Ranger(Optimizer):
         # prep defaults and init torch.optim base
         defaults = dict(lr=lr, alpha=alpha, k=k, step_counter=0, betas=betas,
                         N_sma_threshhold=N_sma_threshhold, eps=eps, weight_decay=weight_decay,
-                        min_weight=min_weight, max_weight=max_weight, virtual_params=None)
+                        min_weight=min_weight, max_weight=max_weight, virtual_params=None, gc_dim=1)
         super().__init__(params, defaults)
 
         # adjustable threshold
@@ -147,7 +147,7 @@ class Ranger(Optimizer):
                 # if grad.dim() > self.gc_gradient_threshold:
                 #    grad.add_(-grad.mean(dim=tuple(range(1, grad.dim())), keepdim=True))
                 if self.gc_loc:
-                    grad = centralized_gradient(grad, use_gc=self.use_gc, gc_conv_only=self.gc_conv_only)
+                    grad = centralized_gradient(grad, group['gc_dim'], use_gc=self.use_gc, gc_conv_only=self.gc_conv_only)
 
                 state['step'] += 1
 
