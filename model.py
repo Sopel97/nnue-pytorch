@@ -261,7 +261,7 @@ class NNUE(pl.LightningModule):
       {'params' : [self.layer_stacks.l1.bias], 'lr' : LR },
       {'params' : [self.layer_stacks.l2.weight], 'lr' : LR, 'min_weight' : -127/64, 'max_weight' : 127/64 },
       {'params' : [self.layer_stacks.l2.bias], 'lr' : LR },
-      {'params' : [self.layer_stacks.output.weight], 'lr' : LR / 10, 'min_weight' : -127*127/9600, 'max_weight' : 127*127/9600 },
+      {'params' : [self.layer_stacks.output.weight], 'lr' : LR / 10, 'min_weight' : -127*32767/(16*256*600), 'max_weight' : 127*32767/(16*256*600) },
       {'params' : [self.layer_stacks.output.bias], 'lr' : LR / 10 },
     ]
     # increasing the eps leads to less saturated nets with a few dead neurons
