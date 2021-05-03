@@ -11,6 +11,7 @@ from feature_transformer import DoubleFeatureTransformerSlice
 L1 = 256
 L2 = 32
 L3 = 32
+LA = 2 * L1 + L2 + L3
 
 def get_parameters(layers):
   return [p for layer in layers for p in layer.parameters()]
@@ -28,7 +29,7 @@ class LayerStacks(nn.Module):
     #       one potential solution would be to coalesce the weights on each step.
     self.l1_fact = nn.Linear(2 * L1, L2, bias=False)
     self.l2 = nn.Linear(L2, L3 * count)
-    self.output = nn.Linear(L3, 1 * count)
+    self.output = nn.Linear(LA, 1 * count)
 
     self.idx_offset = None
 
@@ -82,7 +83,9 @@ class LayerStacks(nn.Module):
     l2c_ = l2s_.view(-1, L3)[indices]
     l2x_ = torch.clamp(l2c_, 0.0, 1.0)
 
-    l3s_ = self.output(l2x_).reshape((-1, self.count, 1))
+    l3in_ = torch.cat([x, l1x_, l2x_], dim=1)
+
+    l3s_ = self.output(l3in_).reshape((-1, self.count, 1))
     l3c_ = l3s_.view(-1, 1)[indices]
     l3x_ = l3c_
 
