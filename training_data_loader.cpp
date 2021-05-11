@@ -257,6 +257,67 @@ struct HalfKAv2Factorized {
     }
 };
 
+struct HalfKT {
+    static constexpr int NUM_SQ = 64;
+    static constexpr int NUM_PT = 6;
+    static constexpr int NUM_PLANES = NUM_SQ * NUM_PT;
+    static constexpr int INPUTS = NUM_PLANES * NUM_SQ;
+
+    static constexpr int MAX_ACTIVE_FEATURES = 16;
+
+    static int feature_index(Color color, Square ksq, Square sq, PieceType p)
+    {
+        auto p_idx = static_cast<int>(p);
+        return static_cast<int>(orient_flip(color, sq)) + p_idx * NUM_SQ + static_cast<int>(ksq) * NUM_PLANES;
+    }
+
+    static std::pair<int, int> fill_features_sparse(const TrainingDataEntry& e, int* features, float* values, Color color)
+    {
+        auto& pos = e.pos;
+        auto pieces = pos.piecesBB(!color);
+        auto ksq = pos.kingSquare(color);
+
+        int j = 0;
+        for(Square sq : pieces)
+        {
+            auto p = pos.pieceAt(sq);
+            values[j] = 1.0f;
+            features[j] = feature_index(color, orient_flip(color, ksq), sq, p.type());
+            ++j;
+        }
+
+        return { j, INPUTS };
+    }
+};
+
+struct HalfKTFactorized {
+    // Factorized features
+    static constexpr int PIECE_INPUTS = HalfKT::NUM_SQ * HalfKT::NUM_PT;
+    static constexpr int INPUTS = HalfKT::INPUTS + PIECE_INPUTS;
+
+    static constexpr int MAX_PIECE_FEATURES = 16;
+    static constexpr int MAX_ACTIVE_FEATURES = HalfKT::MAX_ACTIVE_FEATURES + MAX_PIECE_FEATURES;
+
+    static std::pair<int, int> fill_features_sparse(const TrainingDataEntry& e, int* features, float* values, Color color)
+    {
+        const auto [start_j, offset] = HalfKT::fill_features_sparse(e, features, values, color);
+        auto& pos = e.pos;
+        auto pieces = pos.piecesBB(!color);
+
+        int j = start_j;
+        for(Square sq : pieces)
+        {
+            auto p = pos.pieceAt(sq);
+            auto p_idx = static_cast<int>(p.type());
+            values[j] = 1.0f;
+            features[j] = offset + (p_idx * HalfKT::NUM_SQ) + static_cast<int>(orient_flip(color, sq));
+            ++j;
+        }
+
+        return { j, INPUTS };
+    }
+};
+
 template <typename T, typename... Ts>
 struct FeatureSet
 {
@@ -583,6 +644,14 @@ extern "C" {
         {
             return new SparseBatch(FeatureSet<HalfKAv2Factorized>{}, entries);
         }
+        else if (feature_set == "HalfKT")
+        {
+            return new SparseBatch(FeatureSet<HalfKT>{}, entries);
+        }
+        else if (feature_set == "HalfKT^")
+        {
+            return new SparseBatch(FeatureSet<HalfKTFactorized>{}, entries);
+        }
         fprintf(stderr, "Unknown feature_set %s\n", feature_set_c);
         return nullptr;
     }
@@ -637,6 +706,14 @@ extern "C" {
         else if (feature_set == "HalfKAv2^")
         {
             return new FeaturedBatchStream<FeatureSet<HalfKAv2Factorized>, SparseBatch>(concurrency, filename, batch_size, cyclic, skipPredicate);
+        }
+        else if (feature_set == "HalfKT")
+        {
+            return new FeaturedBatchStream<FeatureSet<HalfKT>, SparseBatch>(concurrency, filename, batch_size, cyclic, skipPredicate);
+        }
+        else if (feature_set == "HalfKT^")
+        {
+            return new FeaturedBatchStream<FeatureSet<HalfKTFactorized>, SparseBatch>(concurrency, filename, batch_size, cyclic, skipPredicate);
         }
         fprintf(stderr, "Unknown feature_set %s\n", feature_set_c);
         return nullptr;
