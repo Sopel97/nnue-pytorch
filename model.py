@@ -68,25 +68,47 @@ class LayerStacks(nn.Module):
     if self.idx_offset == None or self.idx_offset.shape[0] != x.shape[0]:
       self.idx_offset = torch.arange(0,x.shape[0]*self.count,self.count, device=ls_indices.device)
 
-    indices = ls_indices.flatten() + self.idx_offset
+    indices0 = ls_indices.flatten() + self.idx_offset
+    indices1 = torch.clamp(ls_indices.flatten() + 1, 0, self.count-1) + self.idx_offset
+    indices2 = torch.clamp(ls_indices.flatten() - 1, 0, self.count-1) + self.idx_offset
 
     l1s_ = self.l1(x).reshape((-1, self.count, L2))
     l1f_ = self.l1_fact(x)
     # https://stackoverflow.com/questions/55881002/pytorch-tensor-indexing-how-to-gather-rows-by-tensor-containing-indices
     # basically we present it as a list of individual results and pick not only based on
     # the ls index but also based on batch (they are combined into one index)
-    l1c_ = l1s_.view(-1, L2)[indices]
-    l1x_ = torch.clamp(l1c_ + l1f_, 0.0, 1.0)
+    l1c_0 = l1s_.view(-1, L2)[indices0]
+    l1c_1 = l1s_.view(-1, L2)[indices1]
+    l1c_2 = l1s_.view(-1, L2)[indices2]
+    l1x_0 = torch.clamp(l1c_0 + l1f_, 0.0, 1.0)
+    l1x_1 = torch.clamp(l1c_1 + l1f_, 0.0, 1.0)
+    l1x_2 = torch.clamp(l1c_2 + l1f_, 0.0, 1.0)
 
-    l2s_ = self.l2(l1x_).reshape((-1, self.count, L3))
-    l2c_ = l2s_.view(-1, L3)[indices]
-    l2x_ = torch.clamp(l2c_, 0.0, 1.0)
+    l2s_0 = self.l2(l1x_0).reshape((-1, self.count, L3))
+    l2c_0 = l2s_0.view(-1, L3)[indices0]
+    l2x_0 = torch.clamp(l2c_0, 0.0, 1.0)
 
-    l3s_ = self.output(l2x_).reshape((-1, self.count, 1))
-    l3c_ = l3s_.view(-1, 1)[indices]
-    l3x_ = l3c_
+    l2s_1 = self.l2(l1x_1).reshape((-1, self.count, L3))
+    l2c_1 = l2s_1.view(-1, L3)[indices1]
+    l2x_1 = torch.clamp(l2c_1, 0.0, 1.0)
 
-    return l3x_
+    l2s_2 = self.l2(l1x_2).reshape((-1, self.count, L3))
+    l2c_2 = l2s_2.view(-1, L3)[indices2]
+    l2x_2 = torch.clamp(l2c_2, 0.0, 1.0)
+
+    l3s_0 = self.output(l2x_0).reshape((-1, self.count, 1))
+    l3c_0 = l3s_0.view(-1, 1)[indices0]
+    l3x_0 = l3c_0
+
+    l3s_1 = self.output(l2x_1).reshape((-1, self.count, 1))
+    l3c_1 = l3s_1.view(-1, 1)[indices1]
+    l3x_1 = l3c_1
+
+    l3s_2 = self.output(l2x_2).reshape((-1, self.count, 1))
+    l3c_2 = l3s_2.view(-1, 1)[indices2]
+    l3x_2 = l3c_2
+
+    return l3x_0 * 0.8 + l3x_1 * 0.1 + l3x_2 * 0.1
 
   def get_coalesced_layer_stacks(self):
     for i in range(self.count):
