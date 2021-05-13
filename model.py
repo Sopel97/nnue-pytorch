@@ -8,7 +8,7 @@ import copy
 from feature_transformer import DoubleFeatureTransformerSlice
 
 # 3 layer fully connected network
-L1 = 512
+L1 = 64
 L2 = 16
 L3 = 32
 
@@ -121,6 +121,12 @@ class NNUE(pl.LightningModule):
     self.layer_stacks = LayerStacks(self.num_ls_buckets)
     self.lambda_ = lambda_
 
+    self.weight_clipping = [
+      {'params' : [self.layer_stacks.l1.weight], 'min_weight' : -127/64, 'max_weight' : 127/64, 'virtual_params' : self.layer_stacks.l1_fact.weight },
+      {'params' : [self.layer_stacks.l2.weight], 'min_weight' : -127/64, 'max_weight' : 127/64 },
+      {'params' : [self.layer_stacks.output.weight], 'min_weight' : -127*127/9600, 'max_weight' : 127*127/9600 },
+    ]
+
     self._init_layers()
 
   '''
@@ -214,7 +220,34 @@ class NNUE(pl.LightningModule):
 
     return x
 
+  def _clip_weights(self):
+    for group in self.weight_clipping:
+      for p in group['params']:
+        if 'min_weight' in group or 'max_weight' in group:
+          p_data_fp32 = p.data
+          min_weight = group['min_weight']
+          max_weight = group['max_weight']
+          if 'virtual_params' in group:
+            virtual_params = group['virtual_params']
+            xs = p_data_fp32.shape[0] // virtual_params.shape[0]
+            ys = p_data_fp32.shape[1] // virtual_params.shape[1]
+            expanded_virtual_layer = virtual_params.repeat(xs, ys)
+            if min_weight is not None:
+              min_weight_t = p_data_fp32.new_full(p_data_fp32.shape, min_weight) - expanded_virtual_layer
+              p_data_fp32 = torch.max(p_data_fp32, min_weight_t)
+            if max_weight is not None:
+              max_weight_t = p_data_fp32.new_full(p_data_fp32.shape, max_weight) - expanded_virtual_layer
+              p_data_fp32 = torch.min(p_data_fp32, max_weight_t)
+          else:
+            if min_weight is not None and max_weight is not None:
+              p_data_fp32.clamp_(min_weight, max_weight)
+            else:
+              raise Exception('Not supported.')
+          p.data.copy_(p_data_fp32)
+
   def step_(self, batch, batch_idx, loss_type):
+    self._clip_weights()
+
     us, them, white_indices, white_values, black_indices, black_values, outcome, score, psqt_indices, layer_stack_indices = batch
 
     # 600 is the kPonanzaConstant scaling factor needed to convert the training net output to a score.
@@ -249,20 +282,26 @@ class NNUE(pl.LightningModule):
 
   def configure_optimizers(self):
     # Train with a lower LR on the output layer
-    LR = 1.5e-3
+    LR = 2
     train_params = [
       {'params' : get_parameters([self.input]), 'lr' : LR },
       # Needs to be updated before because the l1 layer depends on it
       {'params' : [self.layer_stacks.l1_fact.weight], 'lr' : LR },
-      {'params' : [self.layer_stacks.l1.weight], 'lr' : LR, 'min_weight' : -127/64, 'max_weight' : 127/64, 'virtual_params' : self.layer_stacks.l1_fact.weight },
+      {'params' : [self.layer_stacks.l1.weight], 'lr' : LR },
       {'params' : [self.layer_stacks.l1.bias], 'lr' : LR },
-      {'params' : [self.layer_stacks.l2.weight], 'lr' : LR, 'min_weight' : -127/64, 'max_weight' : 127/64 },
+      {'params' : [self.layer_stacks.l2.weight], 'lr' : LR },
       {'params' : [self.layer_stacks.l2.bias], 'lr' : LR },
-      {'params' : [self.layer_stacks.output.weight], 'lr' : LR / 10, 'min_weight' : -127*127/9600, 'max_weight' : 127*127/9600 },
-      {'params' : [self.layer_stacks.output.bias], 'lr' : LR / 10 },
+      {'params' : [self.layer_stacks.output.weight], 'lr' : LR },
+      {'params' : [self.layer_stacks.output.bias], 'lr' : LR },
     ]
     # increasing the eps leads to less saturated nets with a few dead neurons
-    optimizer = ranger.Ranger(train_params, betas=(.9, 0.999), eps=1.0e-7, gc_loc=False, use_gc=False)
-    # Drop learning rate after 75 epochs
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.987)
+    optimizer = torch.optim.SGD(train_params, weight_decay=0)
+
+    def get_lr(epoch):
+      if epoch == 0:
+        print('a')
+        return 0.2
+      return 0.987**epoch
+
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, get_lr)
     return [optimizer], [scheduler]
