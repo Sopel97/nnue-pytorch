@@ -232,14 +232,27 @@ struct HalfKAv2 {
 struct HalfKAv2Factorized {
     // Factorized features
     static constexpr int PIECE_INPUTS = HalfKAv2::NUM_SQ * HalfKAv2::NUM_PT;
-    static constexpr int INPUTS = HalfKAv2::INPUTS + PIECE_INPUTS;
+    static constexpr int REL_KP_INPUTS = HalfKP::NUM_PT * 15 * 15;
+    static constexpr int INPUTS = HalfKAv2::INPUTS + PIECE_INPUTS + REL_KP_INPUTS;
 
     static constexpr int MAX_PIECE_FEATURES = 32;
-    static constexpr int MAX_ACTIVE_FEATURES = HalfKAv2::MAX_ACTIVE_FEATURES + MAX_PIECE_FEATURES;
+    static constexpr int MAX_REL_KP_FEATURES = 32;
+    static constexpr int MAX_ACTIVE_FEATURES = HalfKAv2::MAX_ACTIVE_FEATURES + MAX_PIECE_FEATURES + MAX_REL_KP_FEATURES;
+
+    static int half_relative_ka(Color color, Square oriented_ksq, Square sq, Piece p)
+    {
+        constexpr int W = 15;
+        constexpr int H = 15;
+        auto p_idx = static_cast<int>(p.type()) * 2 + (p.color() != color);
+        sq = orient_flip(color, sq);
+        int relative_file = sq.file() - oriented_ksq.file() + (W / 2);
+        int relative_rank = sq.rank() - oriented_ksq.rank() + (H / 2);
+        return (p_idx * W * H) + H * relative_file + relative_rank;
+    }
 
     static std::pair<int, int> fill_features_sparse(const TrainingDataEntry& e, int* features, float* values, Color color)
     {
-        const auto [start_j, offset] = HalfKAv2::fill_features_sparse(e, features, values, color);
+        auto [start_j, offset] = HalfKAv2::fill_features_sparse(e, features, values, color);
         auto& pos = e.pos;
         auto pieces = pos.piecesBB();
 
@@ -250,6 +263,16 @@ struct HalfKAv2Factorized {
             auto p_idx = static_cast<int>(p.type()) * 2 + (p.color() != color);
             values[j] = 1.0f;
             features[j] = offset + (p_idx * HalfKAv2::NUM_SQ) + static_cast<int>(orient_flip(color, sq));
+            ++j;
+        }
+
+        offset += PIECE_INPUTS;
+        auto oriented_ksq = orient_flip(color, pos.kingSquare(color));
+        for (Square sq : pieces)
+        {
+            auto p = pos.pieceAt(sq);
+            values[j] = 1.0f;
+            features[j] = offset + half_relative_ka(color, oriented_ksq, sq, p);
             ++j;
         }
 

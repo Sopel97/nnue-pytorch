@@ -20,6 +20,12 @@ def halfka_idx(is_white_pov: bool, king_sq: int, sq: int, p: chess.Piece):
     p_idx -= 1
   return orient(is_white_pov, sq) + p_idx * NUM_SQ + king_sq * NUM_PLANES_REAL
 
+def get_file(sq: int):
+  return sq % 8
+
+def get_rank(sq: int):
+  return sq // 8
+
 def halfka_psqts():
   # values copied from stockfish, in stockfish internal units
   piece_values = {
@@ -59,7 +65,7 @@ class Features(FeatureBlock):
 
 class FactorizedFeatures(FeatureBlock):
   def __init__(self):
-    super(FactorizedFeatures, self).__init__('HalfKAv2^', 0x5f234cb8, OrderedDict([('HalfKAv2', NUM_PLANES_REAL * NUM_SQ), ('A', NUM_PLANES_VIRTUAL)]))
+    super(FactorizedFeatures, self).__init__('HalfKAv2^', 0x5f234cb8, OrderedDict([('HalfKAv2', NUM_PLANES_REAL * NUM_SQ), ('A', NUM_PLANES_VIRTUAL), ('HalfRelativeKA', NUM_PT_VIRTUAL * 15 * 15)]))
 
   def get_active_features(self, board: chess.Board):
     raise Exception('Not supported yet, you must use the c++ data loader for factorizer support during training')
@@ -74,10 +80,15 @@ class FactorizedFeatures(FeatureBlock):
     if a_idx // NUM_SQ == 10 and k_idx != a_idx % NUM_SQ:
       a_idx += NUM_SQ
 
-    return [idx, self.get_factor_base_feature('A') + a_idx]
+    a_sq = a_idx % NUM_SQ
+    relative_file = get_file(p_sq) - get_file(k_idx) + 7
+    relative_rank = get_rank(p_sq) - get_rank(k_idx) + 7
+    relative_kp_idx = (a_idx // NUM_SQ) * 15 * 15 + 15 * relative_file + relative_rank
+
+    return [idx, self.get_factor_base_feature('A') + a_idx, self.get_factor_base_feature('HalfRelativeKA') + relative_kp_idx]
 
   def get_initial_psqt_features(self):
-    return halfka_psqts() + [0] * NUM_PLANES_VIRTUAL
+    return halfka_psqts() + [0] * (NUM_PLANES_VIRTUAL + NUM_PT_VIRTUAL * 15 * 15)
 
 '''
 This is used by the features module for discovery of feature blocks.
