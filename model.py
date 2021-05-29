@@ -258,8 +258,8 @@ class NNUE(pl.LightningModule):
       {'params' : [self.layer_stacks.l1.bias], 'lr' : LR },
       {'params' : [self.layer_stacks.l2.weight], 'lr' : LR, 'min_weight' : -127/64, 'max_weight' : 127/64 },
       {'params' : [self.layer_stacks.l2.bias], 'lr' : LR },
-      {'params' : [self.layer_stacks.output.weight], 'lr' : LR / 10, 'min_weight' : -127*127/9600, 'max_weight' : 127*127/9600 },
-      {'params' : [self.layer_stacks.output.bias], 'lr' : LR / 10 },
+      {'params' : [self.layer_stacks.output.weight], 'lr' : LR, 'min_weight' : -127*127/9600, 'max_weight' : 127*127/9600 },
+      {'params' : [self.layer_stacks.output.bias], 'lr' : LR },
     ]
     # increasing the eps leads to less saturated nets with a few dead neurons
     optimizer = ranger.Ranger(train_params, betas=(.9, 0.999), eps=1.0e-7, gc_loc=False, use_gc=False)
