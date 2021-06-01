@@ -2195,6 +2195,15 @@ namespace chess
 
     public:
 
+        [[nodiscard]] constexpr Bitboard flippedHorizontally()
+        {
+            std::uint64_t b = m_squares;
+            b = (b & 0xF0F0F0F0F0F0F0F0ull) >> 4 | (b & 0x0F0F0F0F0F0F0F0Full) << 4;
+            b = (b & 0xCCCCCCCCCCCCCCCCull) >> 2 | (b & 0x3333333333333333ull) << 2;
+            b = (b & 0xAAAAAAAAAAAAAAAAull) >> 1 | (b & 0x5555555555555555ull) << 1;
+            return Bitboard(b);
+        }
+
         [[nodiscard]] static constexpr Bitboard none()
         {
             return Bitboard{};
@@ -3796,6 +3805,24 @@ namespace chess
             return true;
         }
 
+        inline void flipHorizontally()
+        {
+            for (auto& bb : m_pieceBB)
+                bb = bb.flippedHorizontally();
+
+            for (auto& bb : m_piecesByColorBB)
+                bb = bb.flippedHorizontally();
+
+            for (Rank r = rank1; r <= rank8; ++r)
+            {
+                for (File f = fileA; f <= fileD; ++f)
+                {
+                    const Square sq(f, r);
+                    std::swap(m_pieces[sq], m_pieces[sq.flippedHorizontally()]);
+                }
+            }
+        }
+
         [[nodiscard]] inline std::string fen() const;
 
         [[nodiscard]] inline bool trySet(std::string_view boardState)
@@ -4426,6 +4453,13 @@ namespace chess
         }
 
         inline void set(std::string_view fen);
+
+        inline void flipHorizontally()
+        {
+            Board::flipHorizontally();
+            if (m_epSquare != Square::none())
+                m_epSquare = m_epSquare.flippedHorizontally();
+        }
 
         // Returns false if the fen was not valid
         // If the returned value was false the position

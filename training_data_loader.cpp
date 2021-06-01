@@ -450,6 +450,8 @@ struct FeaturedBatchStream : Stream<StorageT>
                     }
                 }
 
+                do_mirroring(entries);
+
                 auto batch = new StorageT(FeatureSet{}, entries);
 
                 {
@@ -533,6 +535,19 @@ private:
     std::atomic_int m_num_workers;
 
     std::vector<std::thread> m_workers;
+
+    void do_mirroring(std::vector<TrainingDataEntry>& entries) const
+    {
+        for (auto& entry : entries)
+        {
+            auto& pos = entry.pos;
+            if (pos.castlingRights() != chess::CastlingRights::None)
+                continue;
+
+            if (rand() % 2 == 0)
+                pos.flipHorizontally();
+        }
+    }
 };
 
 extern "C" {
