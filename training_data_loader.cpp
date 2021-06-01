@@ -257,6 +257,42 @@ struct HalfKAv2Factorized {
     }
 };
 
+struct HalfRelativeKA {
+    static constexpr int NUM_PT = 12;
+    static constexpr int INPUTS = NUM_PT * 15 * 15;
+
+    static constexpr int MAX_ACTIVE_FEATURES = 32;
+
+    static int half_relative_ka(Color color, Square oriented_ksq, Square sq, Piece p)
+    {
+        constexpr int W = 15;
+        constexpr int H = 15;
+        auto p_idx = static_cast<int>(p.type()) * 2 + (p.color() != color);
+        sq = orient_flip(color, sq);
+        int relative_file = sq.file() - oriented_ksq.file() + (W / 2);
+        int relative_rank = sq.rank() - oriented_ksq.rank() + (H / 2);
+        return (p_idx * W * H) + H * relative_file + relative_rank;
+    }
+
+    static std::pair<int, int> fill_features_sparse(const TrainingDataEntry& e, int* features, float* values, Color color)
+    {
+        auto& pos = e.pos;
+        auto pieces = pos.piecesBB();
+        auto ksq = pos.kingSquare(color);
+
+        int j = 0;
+        for(Square sq : pieces)
+        {
+            auto p = pos.pieceAt(sq);
+            values[j] = 1.0f;
+            features[j] = half_relative_ka(color, orient_flip(color, ksq), sq, p);
+            ++j;
+        }
+
+        return { j, INPUTS };
+    }
+};
+
 template <typename T, typename... Ts>
 struct FeatureSet
 {
@@ -583,6 +619,10 @@ extern "C" {
         {
             return new SparseBatch(FeatureSet<HalfKAv2Factorized>{}, entries);
         }
+        else if (feature_set == "HalfRelativeKA")
+        {
+            return new SparseBatch(FeatureSet<HalfRelativeKA>{}, entries);
+        }
         fprintf(stderr, "Unknown feature_set %s\n", feature_set_c);
         return nullptr;
     }
@@ -637,6 +677,10 @@ extern "C" {
         else if (feature_set == "HalfKAv2^")
         {
             return new FeaturedBatchStream<FeatureSet<HalfKAv2Factorized>, SparseBatch>(concurrency, filename, batch_size, cyclic, skipPredicate);
+        }
+        else if (feature_set == "HalfRelativeKA")
+        {
+            return new FeaturedBatchStream<FeatureSet<HalfRelativeKA>, SparseBatch>(concurrency, filename, batch_size, cyclic, skipPredicate);
         }
         fprintf(stderr, "Unknown feature_set %s\n", feature_set_c);
         return nullptr;
