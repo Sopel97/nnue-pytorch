@@ -36,7 +36,7 @@ class NNUEWriter():
 
     fc_hash = self.fc_hash(model)
     self.write_header(model, fc_hash)
-    self.int32(model.feature_set.hash ^ (M.L1*2)) # Feature transformer hash
+    self.int32(model.feature_set.hash ^ (model.sizes[0]*2)) # Feature transformer hash
     self.write_feature_transformer(model)
     for l1, l2, output in model.layer_stacks.get_coalesced_layer_stacks():
       self.int32(fc_hash) # FC layers hash
@@ -48,7 +48,7 @@ class NNUEWriter():
   def fc_hash(model):
     # InputSlice hash
     prev_hash = 0xEC42E90D
-    prev_hash ^= (M.L1 * 2)
+    prev_hash ^= (model.sizes[0] * 2)
 
     # Fully connected layers
     layers = [model.layer_stacks.l1, model.layer_stacks.l2, model.layer_stacks.output]
@@ -65,7 +65,7 @@ class NNUEWriter():
 
   def write_header(self, model, fc_hash):
     self.int32(VERSION) # version
-    self.int32(fc_hash ^ model.feature_set.hash ^ (M.L1*2)) # halfkp network hash
+    self.int32(fc_hash ^ model.feature_set.hash ^ (model.sizes[0]*2)) # halfkp network hash
     description = b"Features=HalfKA(Friend)[49216->256x2],"
     description += b"Network=AffineTransform[1<-32](ClippedReLU[32](AffineTransform[32<-32]"
     description += b"(ClippedReLU[32](AffineTransform[32<-512](InputSlice[512(0:512)])))))"
@@ -85,14 +85,14 @@ class NNUEWriter():
     # int16 bias = round(x * 127)
     # int16 weight = round(x * 127)
     layer = model.input
-    bias = layer.bias.data[:M.L1]
+    bias = layer.bias.data[:model.sizes[0]]
     bias = bias.mul(127).round().to(torch.int16)
     ascii_hist('ft bias:', bias.numpy())
     self.buf.extend(bias.flatten().numpy().tobytes())
 
     weight = self.coalesce_ft_weights(model, layer)
-    weight0 = weight[:, :M.L1]
-    psqtweight0 = weight[:, M.L1:]
+    weight0 = weight[:, :model.sizes[0]]
+    psqtweight0 = weight[:, model.sizes[0]:]
     weight = weight0.mul(127).round().to(torch.int16)
     psqtweight = psqtweight0.mul(9600).round().to(torch.int32) # kPonanzaConstant * FV_SCALE = 9600
     ascii_hist('ft weight:', weight.numpy())
@@ -215,8 +215,21 @@ def main():
   parser = argparse.ArgumentParser(description="Converts files between ckpt and nnue format.")
   parser.add_argument("source", help="Source file (can be .ckpt, .pt or .nnue)")
   parser.add_argument("target", help="Target file (can be .pt or .nnue)")
+  parser.add_argument("--run_id", type=int, dest='run_id', help="")
   features.add_argparse_args(parser)
   args = parser.parse_args()
+
+  net_sizes = [
+    [512, 32, 32],
+    [512, 64, 32],
+    [512, 64, 64],
+    [512, 128, 64],
+    [512, 128, 128],
+    [512, 256, 128],
+    [512, 256, 256],
+    [512, 512, 256]
+  ]
+  net_size = net_sizes[args.run_id]
 
   feature_set = features.get_feature_set_from_name(args.features)
 
@@ -228,8 +241,9 @@ def main():
     if args.source.endswith(".pt"):
       nnue = torch.load(args.source)
     else:
-      nnue = M.NNUE.load_from_checkpoint(args.source, feature_set=feature_set)
+      nnue = M.NNUE.load_from_checkpoint(args.source, feature_set=feature_set, layer_sizes=net_size)
     nnue.eval()
+    nnue.sizes = net_size
     writer = NNUEWriter(nnue)
     with open(args.target, 'wb') as f:
       f.write(writer.buf)
