@@ -79,8 +79,9 @@ def run_match(best, root_dir, c_chess_exe, concurrency, book_file_name, stockfis
     )
     command = command + " -engine cmd={} name=master".format(stockfish_base)
     for net in best:
-        command = command + " -engine cmd={} name={} option.EvalFile={}".format(
-            stockfish_test, net, os.path.join(os.getcwd(), net)
+        run_id = re.search(r'.*?run_(\d).*?', net)[1]
+        command = command + " -engine cmd={}{} name={} option.EvalFile={}".format(
+            stockfish_test, run_id, net, os.path.join(os.getcwd(), net)
         )
     command = command + " -pgn {} 0 2>&1".format(
         pgn_file_name
