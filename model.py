@@ -9,59 +9,49 @@ from feature_transformer import DoubleFeatureTransformerSlice
 
 # 3 layer fully connected network
 L1 = 512
-L2 = 16
-L3 = 32
+LX = 32
 
 def get_parameters(layers):
   return [p for layer in layers for p in layer.parameters()]
 
 class LayerStacks(nn.Module):
-  def __init__(self, count):
+  def __init__(self, count, num_hidden):
     super(LayerStacks, self).__init__()
 
     self.count = count
-    self.l1 = nn.Linear(2 * L1, L2 * count)
-    # Factorizer only for the first layer because later
-    # there's a non-linearity and factorization breaks.
-    # It breaks the min/max weight clipping but hopefully it's not bad.
-    # TODO: try solving it
-    #       one potential solution would be to coalesce the weights on each step.
-    self.l1_fact = nn.Linear(2 * L1, L2, bias=False)
-    self.l2 = nn.Linear(L2, L3 * count)
-    self.output = nn.Linear(L3, 1 * count)
+    self.num_hidden = num_hidden
+    if num_hidden == 0:
+      self.layers = [nn.Linear(2 * L1, 1 * count)]
+      self.l1_fact = nn.Linear(2 * L1, 1, bias=False)
+    else:
+      self.layers = [nn.Linear(2 * L1, LX * count)] + [nn.Linear(LX, LX * count) for i in range(num_hidden - 1)] + [nn.Linear(LX, 1 * count)]
+      self.l1_fact = nn.Linear(2 * L1, LX, bias=False)
+    self.layers = nn.ModuleList(self.layers)
 
     self.idx_offset = None
 
     self._init_layers()
 
   def _init_layers(self):
-    l1_weight = self.l1.weight
-    l1_bias = self.l1.bias
+    for layer in self.layers:
+      weight = layer.weight
+      bias = layer.bias
+      with torch.no_grad():
+        for i in range(1, self.count):
+          ww = weight.shape[0]//8
+          weight[i*ww:(i+1)*ww, :] = weight[:ww, :]
+          bias[i*ww:(i+1)*ww] = bias[:ww]
+      layer.weight = nn.Parameter(weight)
+      layer.bias = nn.Parameter(bias)
+
     l1_fact_weight = self.l1_fact.weight
-    l2_weight = self.l2.weight
-    l2_bias = self.l2.bias
-    output_weight = self.output.weight
-    output_bias = self.output.bias
+    output_bias = self.layers[-1].bias
     with torch.no_grad():
       l1_fact_weight.fill_(0.0)
       output_bias.fill_(0.0)
 
-      for i in range(1, self.count):
-        # Make all layer stacks have the same initialization.
-        # Basically copy the first to all other layer stacks.
-        l1_weight[i*L2:(i+1)*L2, :] = l1_weight[0:L2, :]
-        l1_bias[i*L2:(i+1)*L2] = l1_bias[0:L2]
-        l2_weight[i*L3:(i+1)*L3, :] = l2_weight[0:L3, :]
-        l2_bias[i*L3:(i+1)*L3] = l2_bias[0:L3]
-        output_weight[i:i+1, :] = output_weight[0:1, :]
-
-    self.l1.weight = nn.Parameter(l1_weight)
-    self.l1.bias = nn.Parameter(l1_bias)
     self.l1_fact.weight = nn.Parameter(l1_fact_weight)
-    self.l2.weight = nn.Parameter(l2_weight)
-    self.l2.bias = nn.Parameter(l2_bias)
-    self.output.weight = nn.Parameter(output_weight)
-    self.output.bias = nn.Parameter(output_bias)
+    self.layers[-1].bias = nn.Parameter(output_bias)
 
   def forward(self, x, ls_indices):
     # precompute and cache the offset for gathers
@@ -70,37 +60,30 @@ class LayerStacks(nn.Module):
 
     indices = ls_indices.flatten() + self.idx_offset
 
-    l1s_ = self.l1(x).reshape((-1, self.count, L2))
     l1f_ = self.l1_fact(x)
-    # https://stackoverflow.com/questions/55881002/pytorch-tensor-indexing-how-to-gather-rows-by-tensor-containing-indices
-    # basically we present it as a list of individual results and pick not only based on
-    # the ls index but also based on batch (they are combined into one index)
-    l1c_ = l1s_.view(-1, L2)[indices]
-    l1x_ = torch.clamp(l1c_ + l1f_, 0.0, 1.0)
-
-    l2s_ = self.l2(l1x_).reshape((-1, self.count, L3))
-    l2c_ = l2s_.view(-1, L3)[indices]
-    l2x_ = torch.clamp(l2c_, 0.0, 1.0)
-
-    l3s_ = self.output(l2x_).reshape((-1, self.count, 1))
-    l3c_ = l3s_.view(-1, 1)[indices]
-    l3x_ = l3c_
-
-    return l3x_
+    for i, layer in enumerate(self.layers):
+      ww = layer.weight.shape[0]//8
+      x = layer(x).reshape((-1, self.count, ww))
+      x = x.view(-1, ww)[indices]
+      if i == 0:
+        x += l1f_
+      if i != self.num_hidden:
+        x = torch.clamp(x, 0.0, 1.0)
+    return x
 
   def get_coalesced_layer_stacks(self):
-    for i in range(self.count):
-      with torch.no_grad():
-        l1 = nn.Linear(2*L1, L2)
-        l2 = nn.Linear(L2, L3)
-        output = nn.Linear(L3, 1)
-        l1.weight.data = self.l1.weight[i*L2:(i+1)*L2, :] + self.l1_fact.weight.data
-        l1.bias.data = self.l1.bias[i*L2:(i+1)*L2]
-        l2.weight.data = self.l2.weight[i*L3:(i+1)*L3, :]
-        l2.bias.data = self.l2.bias[i*L3:(i+1)*L3]
-        output.weight.data = self.output.weight[i:(i+1), :]
-        output.bias.data = self.output.bias[i:(i+1)]
-        yield l1, l2, output
+    with torch.no_grad():
+      for i in range(self.count):
+        ll = []
+        for i, layer in enumerate(self.layers):
+          ww = layer.weight.shape[0]//8
+          mock_layer = nn.Linear(layer.weight.shape[1], ww)
+          mock_layer.weight.data = layer.weight[i*ww:(i+1)*ww, :]
+          mock_layer.bias.data = layer.bias[i*ww:(i+1)*ww]
+          if i == 0:
+            mock_layer.weight.data += self.l1_fact.weight.data
+          ll.append(mock_layer)
+        yield ll
 
 
 class NNUE(pl.LightningModule):
@@ -112,14 +95,15 @@ class NNUE(pl.LightningModule):
 
   It is not ideal for training a Pytorch quantized model directly.
   """
-  def __init__(self, feature_set, lambda_=1.0):
+  def __init__(self, feature_set, lambda_=1.0, num_hidden=0):
     super(NNUE, self).__init__()
     self.num_psqt_buckets = feature_set.num_psqt_buckets
     self.num_ls_buckets = feature_set.num_ls_buckets
     self.input = DoubleFeatureTransformerSlice(feature_set.num_features, L1 + self.num_psqt_buckets)
     self.feature_set = feature_set
-    self.layer_stacks = LayerStacks(self.num_ls_buckets)
+    self.layer_stacks = LayerStacks(self.num_ls_buckets, num_hidden)
     self.lambda_ = lambda_
+    self.num_hidden = num_hidden
 
     self._init_layers()
 
@@ -252,15 +236,28 @@ class NNUE(pl.LightningModule):
     LR = 8.75e-4
     train_params = [
       {'params' : get_parameters([self.input]), 'lr' : LR },
-      # Needs to be updated before because the l1 layer depends on it
-      {'params' : [self.layer_stacks.l1_fact.weight], 'lr' : LR },
-      {'params' : [self.layer_stacks.l1.weight], 'lr' : LR, 'min_weight' : -127/64, 'max_weight' : 127/64, 'virtual_params' : self.layer_stacks.l1_fact.weight },
-      {'params' : [self.layer_stacks.l1.bias], 'lr' : LR },
-      {'params' : [self.layer_stacks.l2.weight], 'lr' : LR, 'min_weight' : -127/64, 'max_weight' : 127/64 },
-      {'params' : [self.layer_stacks.l2.bias], 'lr' : LR },
-      {'params' : [self.layer_stacks.output.weight], 'lr' : LR, 'min_weight' : -127*127/9600, 'max_weight' : 127*127/9600 },
-      {'params' : [self.layer_stacks.output.bias], 'lr' : LR },
+      {'params' : [self.layer_stacks.l1_fact.weight], 'lr' : LR }
     ]
+    if self.num_hidden == 0:
+      train_params += [
+        {'params' : [self.layer_stacks.layers[0].weight], 'lr' : LR, 'min_weight' : -127*127/9600, 'max_weight' : 127*127/9600, 'virtual_params' : self.layer_stacks.l1_fact.weight },
+        {'params' : [self.layer_stacks.layers[0].bias], 'lr' : LR }
+      ]
+    else:
+      train_params += [
+        {'params' : [self.layer_stacks.layers[0].weight], 'lr' : LR, 'min_weight' : -127/64, 'max_weight' : 127/64, 'virtual_params' : self.layer_stacks.l1_fact.weight },
+        {'params' : [self.layer_stacks.layers[0].bias], 'lr' : LR }
+      ]
+      train_params += [
+        {'params' : [self.layer_stacks.layers[-1].weight], 'lr' : LR, 'min_weight' : -127*127/9600, 'max_weight' : 127*127/9600 },
+        {'params' : [self.layer_stacks.layers[-1].bias], 'lr' : LR }
+      ]
+      for i in range(1, self.num_hidden):
+        train_params += [
+          {'params' : [self.layer_stacks.layers[i].weight], 'lr' : LR, 'min_weight' : -127/64, 'max_weight' : 127/64 },
+          {'params' : [self.layer_stacks.layers[i].bias], 'lr' : LR }
+        ]
+
     # increasing the eps leads to less saturated nets with a few dead neurons
     optimizer = ranger.Ranger(train_params, betas=(.9, 0.999), eps=1.0e-7, gc_loc=False, use_gc=False)
     # Drop learning rate after 75 epochs

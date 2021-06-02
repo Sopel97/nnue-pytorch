@@ -38,11 +38,10 @@ class NNUEWriter():
     self.write_header(model, fc_hash)
     self.int32(model.feature_set.hash ^ (M.L1*2)) # Feature transformer hash
     self.write_feature_transformer(model)
-    for l1, l2, output in model.layer_stacks.get_coalesced_layer_stacks():
+    for ll in model.layer_stacks.get_coalesced_layer_stacks():
       self.int32(fc_hash) # FC layers hash
-      self.write_fc_layer(l1)
-      self.write_fc_layer(l2)
-      self.write_fc_layer(output, is_output=True)
+      for i, layer in enumerate(ll):
+        self.write_fc_layer(layer, is_output=(i==(len(ll)-1)))
 
   @staticmethod
   def fc_hash(model):
@@ -51,7 +50,7 @@ class NNUEWriter():
     prev_hash ^= (M.L1 * 2)
 
     # Fully connected layers
-    layers = [model.layer_stacks.l1, model.layer_stacks.l2, model.layer_stacks.output]
+    layers = model.layer_stacks.layers
     for layer in layers:
       layer_hash = 0xCC03DAE4
       layer_hash += layer.out_features // model.num_ls_buckets
@@ -215,9 +214,21 @@ def main():
   parser = argparse.ArgumentParser(description="Converts files between ckpt and nnue format.")
   parser.add_argument("source", help="Source file (can be .ckpt, .pt or .nnue)")
   parser.add_argument("target", help="Target file (can be .pt or .nnue)")
+  parser.add_argument("--run_id", type=int, dest='run_id', help="")
   features.add_argparse_args(parser)
   args = parser.parse_args()
 
+  net_sizes = [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+  ]
+  net_size = net_sizes[args.run_id]
   feature_set = features.get_feature_set_from_name(args.features)
 
   print('Converting %s to %s' % (args.source, args.target))
@@ -228,8 +239,9 @@ def main():
     if args.source.endswith(".pt"):
       nnue = torch.load(args.source)
     else:
-      nnue = M.NNUE.load_from_checkpoint(args.source, feature_set=feature_set)
+      nnue = M.NNUE.load_from_checkpoint(args.source, feature_set=feature_set, num_hidden=net_size)
     nnue.eval()
+    nnue.num_hidden = net_size
     writer = NNUEWriter(nnue)
     with open(args.target, 'wb') as f:
       f.write(writer.buf)
