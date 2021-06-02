@@ -44,8 +44,22 @@ def main():
   parser.add_argument("--smart-fen-skipping", action='store_true', dest='smart_fen_skipping', help="If enabled positions that are bad training targets will be skipped during loading. Default: False")
   parser.add_argument("--random-fen-skipping", default=0, type=int, dest='random_fen_skipping', help="skip fens randomly on average random_fen_skipping before using one.")
   parser.add_argument("--resume-from-model", dest='resume_from_model', help="Initializes training using the weights from the given .pt model")
+  parser.add_argument("--run_id", type=int, dest='run_id', help="")
   features.add_argparse_args(parser)
   args = parser.parse_args()
+
+  net_sizes = [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+  ]
+  net_size = net_sizes[args.run_id]
+  print('Layer sizes: {}'.format(net_size))
 
   if not os.path.exists(args.train):
     raise Exception('{0} does not exist'.format(args.train))
@@ -55,7 +69,7 @@ def main():
   feature_set = features.get_feature_set_from_name(args.features)
 
   if args.resume_from_model is None:
-    nnue = M.NNUE(feature_set=feature_set, lambda_=args.lambda_)
+    nnue = M.NNUE(feature_set=feature_set, lambda_=args.lambda_, num_hidden=net_size)
   else:
     nnue = torch.load(args.resume_from_model)
     nnue.set_feature_set(feature_set)
