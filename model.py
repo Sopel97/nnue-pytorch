@@ -215,7 +215,7 @@ class NNUE(pl.LightningModule):
     return x
 
   def step_(self, batch, batch_idx, loss_type):
-    us, them, white_indices, white_values, black_indices, black_values, outcome, score, psqt_indices, layer_stack_indices = batch
+    us, them, white_indices, white_values, black_indices, black_values, outcome, score, psqt_indices, layer_stack_indices, piece_counts = batch
 
     # 600 is the kPonanzaConstant scaling factor needed to convert the training net output to a score.
     # This needs to match the value used in the serializer
@@ -227,7 +227,14 @@ class NNUE(pl.LightningModule):
     t = outcome
     p = (score / in_scaling).sigmoid()
 
-    loss = torch.pow(torch.abs(p - q), 2.6).mean()
+    loss_eval = torch.pow(torch.abs(p - q), 2.6).mean()
+    loss_outcome = torch.pow(torch.abs(t - q), 2.6).mean()
+
+    lambda_t = 1.0 - ((32-piece_counts)/32)**3
+    lambda_max = 1.0
+    lambda_min = 0.5
+    lambda_here = lambda_min + (lambda_max - lambda_min) * lambda_t
+    loss = (lambda_here * loss_eval + (1.0 - lambda_here) * loss_outcome).mean()
 
     self.log(loss_type, loss)
 

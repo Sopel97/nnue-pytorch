@@ -29,6 +29,7 @@ class SparseBatch(ctypes.Structure):
         ('black_values', ctypes.POINTER(ctypes.c_float)),
         ('psqt_indices', ctypes.POINTER(ctypes.c_int)),
         ('layer_stack_indices', ctypes.POINTER(ctypes.c_int)),
+        ('piece_counts', ctypes.POINTER(ctypes.c_int)),
     ]
 
     def get_tensors(self, device):
@@ -42,7 +43,8 @@ class SparseBatch(ctypes.Structure):
         score = torch.from_numpy(np.ctypeslib.as_array(self.score, shape=(self.size, 1))).pin_memory().to(device=device, non_blocking=True)
         psqt_indices = torch.from_numpy(np.ctypeslib.as_array(self.psqt_indices, shape=(self.size,))).long().pin_memory().to(device=device, non_blocking=True)
         layer_stack_indices = torch.from_numpy(np.ctypeslib.as_array(self.layer_stack_indices, shape=(self.size,))).long().pin_memory().to(device=device, non_blocking=True)
-        return us, them, white_indices, white_values, black_indices, black_values, outcome, score, psqt_indices, layer_stack_indices
+        piece_counts = torch.from_numpy(np.ctypeslib.as_array(self.piece_counts, shape=(self.size,))).long().pin_memory().to(device=device, non_blocking=True)
+        return us, them, white_indices, white_values, black_indices, black_values, outcome, score, psqt_indices, layer_stack_indices, piece_counts
 
 SparseBatchPtr = ctypes.POINTER(SparseBatch)
 
