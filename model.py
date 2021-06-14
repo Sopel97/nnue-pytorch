@@ -227,7 +227,7 @@ class NNUE(pl.LightningModule):
     t = outcome
     p = (score / in_scaling).sigmoid()
 
-    loss = (p - q).square().mean()
+    loss = torch.pow(torch.abs(p - q), 2.6).mean()
 
     self.log(loss_type, loss)
 
