@@ -257,6 +257,90 @@ struct HalfKAv2Factorized {
     }
 };
 
+struct HalfKA_CR {
+    static constexpr int NUM_KING_BUCKETS = 64 + 3;
+    static constexpr int NUM_SQ = 64;
+    static constexpr int NUM_PT = 11;
+    static constexpr int NUM_PLANES = NUM_SQ * NUM_PT;
+    static constexpr int INPUTS = NUM_PLANES * NUM_KING_BUCKETS;
+
+    static constexpr int MAX_ACTIVE_FEATURES = 32;
+
+    static int feature_index(Color color, Square ksq, Square sq, Piece p, int cr)
+    {
+        int king_bucket = static_cast<int>(ksq);
+        if (cr != 0)
+            king_bucket = 63 + cr;
+        auto p_idx = static_cast<int>(p.type()) * 2 + (p.color() != color);
+        if (p_idx == 11)
+            --p_idx; // pack the opposite king into the same NUM_SQ * NUM_SQ
+        return static_cast<int>(orient_flip(color, sq)) + p_idx * NUM_SQ + king_bucket * NUM_PLANES;
+    }
+
+    static std::pair<int, int> fill_features_sparse(const TrainingDataEntry& e, int* features, float* values, Color color)
+    {
+        auto& pos = e.pos;
+        auto pieces = pos.piecesBB();
+        auto ksq = pos.kingSquare(color);
+        auto oriented_ksq = orient_flip(color, ksq);
+        auto rights = pos.castlingRights();
+        int cr = 0;
+
+        if (oriented_ksq == e1)
+        {
+            if (color == Color::White)
+            {
+                if (contains(rights, CastlingRights::WhiteKingSide)) cr += 1;
+                if (contains(rights, CastlingRights::WhiteQueenSide)) cr += 2;
+            }
+            else
+            {
+                if (contains(rights, CastlingRights::BlackKingSide)) cr += 1;
+                if (contains(rights, CastlingRights::BlackQueenSide)) cr += 2;
+            }
+        }
+
+        int j = 0;
+        for(Square sq : pieces)
+        {
+            auto p = pos.pieceAt(sq);
+            values[j] = 1.0f;
+            features[j] = feature_index(color, oriented_ksq, sq, p, cr);
+            ++j;
+        }
+
+        return { j, INPUTS };
+    }
+};
+
+struct HalfKA_CRFactorized {
+    // Factorized features
+    static constexpr int PIECE_INPUTS = HalfKA_CR::NUM_SQ * HalfKA_CR::NUM_PT;
+    static constexpr int INPUTS = HalfKA_CR::INPUTS + PIECE_INPUTS;
+
+    static constexpr int MAX_PIECE_FEATURES = 32;
+    static constexpr int MAX_ACTIVE_FEATURES = HalfKA_CR::MAX_ACTIVE_FEATURES + MAX_PIECE_FEATURES;
+
+    static std::pair<int, int> fill_features_sparse(const TrainingDataEntry& e, int* features, float* values, Color color)
+    {
+        const auto [start_j, offset] = HalfKA_CR::fill_features_sparse(e, features, values, color);
+        auto& pos = e.pos;
+        auto pieces = pos.piecesBB();
+
+        int j = start_j;
+        for(Square sq : pieces)
+        {
+            auto p = pos.pieceAt(sq);
+            auto p_idx = static_cast<int>(p.type()) * 2 + (p.color() != color);
+            values[j] = 1.0f;
+            features[j] = offset + (p_idx * HalfKA_CR::NUM_SQ) + static_cast<int>(orient_flip(color, sq));
+            ++j;
+        }
+
+        return { j, INPUTS };
+    }
+};
+
 template <typename T, typename... Ts>
 struct FeatureSet
 {
@@ -583,6 +667,14 @@ extern "C" {
         {
             return new SparseBatch(FeatureSet<HalfKAv2Factorized>{}, entries);
         }
+        else if (feature_set == "HalfKA_CR")
+        {
+            return new SparseBatch(FeatureSet<HalfKA_CR>{}, entries);
+        }
+        else if (feature_set == "HalfKA_CR^")
+        {
+            return new SparseBatch(FeatureSet<HalfKA_CRFactorized>{}, entries);
+        }
         fprintf(stderr, "Unknown feature_set %s\n", feature_set_c);
         return nullptr;
     }
@@ -637,6 +729,14 @@ extern "C" {
         else if (feature_set == "HalfKAv2^")
         {
             return new FeaturedBatchStream<FeatureSet<HalfKAv2Factorized>, SparseBatch>(concurrency, filename, batch_size, cyclic, skipPredicate);
+        }
+        else if (feature_set == "HalfKA_CR")
+        {
+            return new FeaturedBatchStream<FeatureSet<HalfKA_CR>, SparseBatch>(concurrency, filename, batch_size, cyclic, skipPredicate);
+        }
+        else if (feature_set == "HalfKA_CR^")
+        {
+            return new FeaturedBatchStream<FeatureSet<HalfKA_CRFactorized>, SparseBatch>(concurrency, filename, batch_size, cyclic, skipPredicate);
         }
         fprintf(stderr, "Unknown feature_set %s\n", feature_set_c);
         return nullptr;
