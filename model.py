@@ -210,7 +210,7 @@ class NNUE(pl.LightningModule):
     psqt_indices_unsq = psqt_indices.unsqueeze(dim=1)
     wpsqt = wpsqt.gather(1, psqt_indices_unsq)
     bpsqt = bpsqt.gather(1, psqt_indices_unsq)
-    x = self.layer_stacks(l0_, layer_stack_indices) + (wpsqt - bpsqt) * (us - 0.5)
+    x = self.layer_stacks(l0_, layer_stack_indices) + (wpsqt * us) + (bpsqt * them)
 
     return x
 
