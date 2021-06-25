@@ -348,6 +348,11 @@ private:
         score[i] = e.score;
         psqt_indices[i] = (e.pos.piecesBB().count() - 1) / 4;
         layer_stack_indices[i] = psqt_indices[i];
+        if (layer_stack_indices[i] >= 6)
+        {
+            const bool salc = std::abs(int(e.pos.kingSquare(Color::White).file()) - int(e.pos.kingSquare(Color::Black).file())) > 4;
+            layer_stack_indices[i] += 2 * salc;
+        }
         fill_features(FeatureSet<Ts...>{}, i, e);
     }
 
