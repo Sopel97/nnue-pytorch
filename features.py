@@ -13,8 +13,9 @@ import halfkp
 import halfka
 import halfka_v2
 import halfka_v2_b32
+import halfka_v2_b32_s
 
-_feature_modules = [halfkp, halfka, halfka_v2, halfka_v2_b32]
+_feature_modules = [halfkp, halfka, halfka_v2, halfka_v2_b32, halfka_v2_b32_s]
 
 _feature_blocks_by_name = dict()
 
