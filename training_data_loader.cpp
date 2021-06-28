@@ -257,6 +257,82 @@ struct HalfKAv2Factorized {
     }
 };
 
+struct HalfKAv2_b32 {
+    static constexpr int NUM_KING_BUCKETS = 32;
+    static constexpr int NUM_SQ = 64;
+    static constexpr int NUM_PT = 11;
+    static constexpr int NUM_PLANES = NUM_SQ * NUM_PT;
+    static constexpr int INPUTS = NUM_PLANES * NUM_KING_BUCKETS;
+
+    static constexpr int MAX_ACTIVE_FEATURES = 32;
+
+    static constexpr int KingBuckets[64] = {
+        24, 25, 26, 27, 28, 29, 30, 31,
+        16, 17, 18, 19, 20, 21, 22, 23,
+        12, 12, 13, 13, 14, 14, 15, 15,
+         8,  8,  9,  9, 10, 10, 11, 11,
+         4,  4,  5,  5,  6,  6,  7,  7,
+         4,  4,  5,  5,  6,  6,  7,  7,
+         0,  0,  1,  1,  2,  2,  3,  3,
+         0,  0,  1,  1,  2,  2,  3,  3
+    };
+
+    static int feature_index(Color color, Square ksq, Square sq, Piece p)
+    {
+        const int king_bucket = KingBuckets[static_cast<int>(ksq)];
+        auto p_idx = static_cast<int>(p.type()) * 2 + (p.color() != color);
+        if (p_idx == 11)
+            --p_idx; // pack the opposite king into the same NUM_SQ * NUM_SQ
+        return static_cast<int>(orient_flip(color, sq)) + p_idx * NUM_SQ + king_bucket * NUM_PLANES;
+    }
+
+    static std::pair<int, int> fill_features_sparse(const TrainingDataEntry& e, int* features, float* values, Color color)
+    {
+        auto& pos = e.pos;
+        auto pieces = pos.piecesBB();
+        auto ksq = pos.kingSquare(color);
+
+        int j = 0;
+        for(Square sq : pieces)
+        {
+            auto p = pos.pieceAt(sq);
+            values[j] = 1.0f;
+            features[j] = feature_index(color, orient_flip(color, ksq), sq, p);
+            ++j;
+        }
+
+        return { j, INPUTS };
+    }
+};
+
+struct HalfKAv2_b32Factorized {
+    // Factorized features
+    static constexpr int PIECE_INPUTS = HalfKAv2_b32::NUM_SQ * HalfKAv2_b32::NUM_PT;
+    static constexpr int INPUTS = HalfKAv2_b32::INPUTS + PIECE_INPUTS;
+
+    static constexpr int MAX_PIECE_FEATURES = 32;
+    static constexpr int MAX_ACTIVE_FEATURES = HalfKAv2_b32::MAX_ACTIVE_FEATURES + MAX_PIECE_FEATURES;
+
+    static std::pair<int, int> fill_features_sparse(const TrainingDataEntry& e, int* features, float* values, Color color)
+    {
+        const auto [start_j, offset] = HalfKAv2_b32::fill_features_sparse(e, features, values, color);
+        auto& pos = e.pos;
+        auto pieces = pos.piecesBB();
+
+        int j = start_j;
+        for(Square sq : pieces)
+        {
+            auto p = pos.pieceAt(sq);
+            auto p_idx = static_cast<int>(p.type()) * 2 + (p.color() != color);
+            values[j] = 1.0f;
+            features[j] = offset + (p_idx * HalfKAv2_b32::NUM_SQ) + static_cast<int>(orient_flip(color, sq));
+            ++j;
+        }
+
+        return { j, INPUTS };
+    }
+};
+
 template <typename T, typename... Ts>
 struct FeatureSet
 {
@@ -583,6 +659,14 @@ extern "C" {
         {
             return new SparseBatch(FeatureSet<HalfKAv2Factorized>{}, entries);
         }
+        else if (feature_set == "HalfKAv2_b32")
+        {
+            return new SparseBatch(FeatureSet<HalfKAv2_b32>{}, entries);
+        }
+        else if (feature_set == "HalfKAv2_b32^")
+        {
+            return new SparseBatch(FeatureSet<HalfKAv2_b32Factorized>{}, entries);
+        }
         fprintf(stderr, "Unknown feature_set %s\n", feature_set_c);
         return nullptr;
     }
@@ -637,6 +721,14 @@ extern "C" {
         else if (feature_set == "HalfKAv2^")
         {
             return new FeaturedBatchStream<FeatureSet<HalfKAv2Factorized>, SparseBatch>(concurrency, filename, batch_size, cyclic, skipPredicate);
+        }
+        else if (feature_set == "HalfKAv2_b32")
+        {
+            return new FeaturedBatchStream<FeatureSet<HalfKAv2_b32>, SparseBatch>(concurrency, filename, batch_size, cyclic, skipPredicate);
+        }
+        else if (feature_set == "HalfKAv2_b32^")
+        {
+            return new FeaturedBatchStream<FeatureSet<HalfKAv2_b32Factorized>, SparseBatch>(concurrency, filename, batch_size, cyclic, skipPredicate);
         }
         fprintf(stderr, "Unknown feature_set %s\n", feature_set_c);
         return nullptr;
