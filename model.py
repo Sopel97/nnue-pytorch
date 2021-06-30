@@ -21,12 +21,6 @@ class LayerStacks(nn.Module):
 
     self.count = count
     self.l1 = nn.Linear(2 * L1, L2 * count)
-    # Factorizer only for the first layer because later
-    # there's a non-linearity and factorization breaks.
-    # It breaks the min/max weight clipping but hopefully it's not bad.
-    # TODO: try solving it
-    #       one potential solution would be to coalesce the weights on each step.
-    self.l1_fact = nn.Linear(2 * L1, L2, bias=False)
     self.l2 = nn.Linear(L2, L3 * count)
     self.output = nn.Linear(L3, 1 * count)
 
@@ -37,13 +31,11 @@ class LayerStacks(nn.Module):
   def _init_layers(self):
     l1_weight = self.l1.weight
     l1_bias = self.l1.bias
-    l1_fact_weight = self.l1_fact.weight
     l2_weight = self.l2.weight
     l2_bias = self.l2.bias
     output_weight = self.output.weight
     output_bias = self.output.bias
     with torch.no_grad():
-      l1_fact_weight.fill_(0.0)
       output_bias.fill_(0.0)
 
       for i in range(1, self.count):
@@ -57,7 +49,6 @@ class LayerStacks(nn.Module):
 
     self.l1.weight = nn.Parameter(l1_weight)
     self.l1.bias = nn.Parameter(l1_bias)
-    self.l1_fact.weight = nn.Parameter(l1_fact_weight)
     self.l2.weight = nn.Parameter(l2_weight)
     self.l2.bias = nn.Parameter(l2_bias)
     self.output.weight = nn.Parameter(output_weight)
@@ -71,12 +62,11 @@ class LayerStacks(nn.Module):
     indices = ls_indices.flatten() + self.idx_offset
 
     l1s_ = self.l1(x).reshape((-1, self.count, L2))
-    l1f_ = self.l1_fact(x)
     # https://stackoverflow.com/questions/55881002/pytorch-tensor-indexing-how-to-gather-rows-by-tensor-containing-indices
     # basically we present it as a list of individual results and pick not only based on
     # the ls index but also based on batch (they are combined into one index)
     l1c_ = l1s_.view(-1, L2)[indices]
-    l1x_ = torch.clamp(l1c_ + l1f_, 0.0, 1.0)
+    l1x_ = torch.clamp(l1c_, 0.0, 1.0)
 
     l2s_ = self.l2(l1x_).reshape((-1, self.count, L3))
     l2c_ = l2s_.view(-1, L3)[indices]
@@ -94,7 +84,7 @@ class LayerStacks(nn.Module):
         l1 = nn.Linear(2*L1, L2)
         l2 = nn.Linear(L2, L3)
         output = nn.Linear(L3, 1)
-        l1.weight.data = self.l1.weight[i*L2:(i+1)*L2, :] + self.l1_fact.weight.data
+        l1.weight.data = self.l1.weight[i*L2:(i+1)*L2, :]
         l1.bias.data = self.l1.bias[i*L2:(i+1)*L2]
         l2.weight.data = self.l2.weight[i*L3:(i+1)*L3, :]
         l2.bias.data = self.l2.bias[i*L3:(i+1)*L3]
@@ -252,9 +242,7 @@ class NNUE(pl.LightningModule):
     LR = 8.75e-4
     train_params = [
       {'params' : get_parameters([self.input]), 'lr' : LR },
-      # Needs to be updated before because the l1 layer depends on it
-      {'params' : [self.layer_stacks.l1_fact.weight], 'lr' : LR },
-      {'params' : [self.layer_stacks.l1.weight], 'lr' : LR, 'min_weight' : -127/64, 'max_weight' : 127/64, 'virtual_params' : self.layer_stacks.l1_fact.weight },
+      {'params' : [self.layer_stacks.l1.weight], 'lr' : LR, 'min_weight' : -127/64, 'max_weight' : 127/64 },
       {'params' : [self.layer_stacks.l1.bias], 'lr' : LR },
       {'params' : [self.layer_stacks.l2.weight], 'lr' : LR, 'min_weight' : -127/64, 'max_weight' : 127/64 },
       {'params' : [self.layer_stacks.l2.bias], 'lr' : LR },
