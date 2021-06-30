@@ -9,7 +9,7 @@ from feature_transformer import DoubleFeatureTransformerSlice
 
 # 3 layer fully connected network
 L1 = 512
-L2 = 16
+L2 = 256
 L3 = 32
 
 def get_parameters(layers):
@@ -87,6 +87,15 @@ class LayerStacks(nn.Module):
     l3x_ = l3c_
 
     return l3x_
+
+  def freeze_l1_fact(self):
+    with torch.no_grad():
+      for i in range(self.count):
+        self.l1.weight[i*L2:(i+1)*L2, :] += self.l1_fact.weight.data
+
+      self.l1_fact.weight.requires_grad = False
+      self.l1_fact.weight.fill_(0.0)
+      print('L1 fact frozen.')
 
   def get_coalesced_layer_stacks(self):
     for i in range(self.count):
@@ -250,11 +259,19 @@ class NNUE(pl.LightningModule):
   def configure_optimizers(self):
     # Train with a lower LR on the output layer
     LR = 8.75e-4
+
+    steps_per_epoch = 100000000
+    batch_size = 16384
+    prune_l1_min_step = 100
+    prune_l1_max_step = 1000
+    prune_l1_freeze_fact = lambda: self.layer_stacks.freeze_l1_fact()
+    prune_l1_spec = ranger.WeightPruningSpec(substripes=self.num_ls_buckets, block_width=16, target_nnz_blocks_per_stripe=4*self.num_ls_buckets, min_step=prune_l1_min_step, max_step=prune_l1_max_step, stripe_dim=0, on_first_pruning_step=prune_l1_freeze_fact)
+
     train_params = [
       {'params' : get_parameters([self.input]), 'lr' : LR },
       # Needs to be updated before because the l1 layer depends on it
       {'params' : [self.layer_stacks.l1_fact.weight], 'lr' : LR },
-      {'params' : [self.layer_stacks.l1.weight], 'lr' : LR, 'min_weight' : -127/64, 'max_weight' : 127/64, 'virtual_params' : self.layer_stacks.l1_fact.weight },
+      {'params' : [self.layer_stacks.l1.weight], 'lr' : LR, 'min_weight' : -127/64, 'max_weight' : 127/64, 'virtual_params' : self.layer_stacks.l1_fact.weight, 'weight_pruning' : prune_l1_spec },
       {'params' : [self.layer_stacks.l1.bias], 'lr' : LR },
       {'params' : [self.layer_stacks.l2.weight], 'lr' : LR, 'min_weight' : -127/64, 'max_weight' : 127/64 },
       {'params' : [self.layer_stacks.l2.bias], 'lr' : LR },
