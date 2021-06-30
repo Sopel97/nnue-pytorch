@@ -85,20 +85,20 @@ class NNUEWriter():
     # int16 bias = round(x * 127)
     # int16 weight = round(x * 127)
     layer = model.input
+    layer_psqt = model.input_psqt
     bias = layer.bias.data[:M.L1]
     bias = bias.mul(127).round().to(torch.int16)
     ascii_hist('ft bias:', bias.numpy())
     self.buf.extend(bias.flatten().numpy().tobytes())
 
     weight = self.coalesce_ft_weights(model, layer)
-    weight0 = weight[:, :M.L1]
-    psqtweight0 = weight[:, M.L1:]
-    weight = weight0.mul(127).round().to(torch.int16)
-    psqtweight = psqtweight0.mul(9600).round().to(torch.int32) # kPonanzaConstant * FV_SCALE = 9600
+    weight_psqt = self.coalesce_ft_weights(model, layer_psqt)
+    weight = weight.mul(127).round().to(torch.int16)
+    weight_psqt = weight_psqt.mul(9600).round().to(torch.int32) # kPonanzaConstant * FV_SCALE = 9600
     ascii_hist('ft weight:', weight.numpy())
     # weights stored as [41024][256]
     self.buf.extend(weight.flatten().numpy().tobytes())
-    self.buf.extend(psqtweight.flatten().numpy().tobytes())
+    self.buf.extend(weight_psqt.flatten().numpy().tobytes())
 
   def write_fc_layer(self, layer, is_output=False):
     # FC layers are stored as int8 weights, and int32 biases
@@ -183,7 +183,8 @@ class NNUEReader():
     psqtweights = self.tensor(numpy.int32, [shape[0], num_psqt_buckets])
     weights = weights.divide(127.0)
     psqtweights = psqtweights.divide(9600.0)
-    layer.weight.data = torch.cat([weights, psqtweights], dim=1)
+    layer.weight.data = weights
+    layer_psqt.weight.data = psqtweights
 
   def read_fc_layer(self, layer, is_output=False):
     # FC layers are stored as int8 weights, and int32 biases
