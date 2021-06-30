@@ -204,6 +204,19 @@ class NNUE(pl.LightningModule):
     else:
       raise Exception('Cannot change feature set from {} to {}.'.format(self.feature_set.name, new_feature_set.name))
 
+  def disable_main_ft_factorizer(self):
+    with torch.no_grad():
+      weight = self.input.weight.data
+      mask = torch.ones_like(weight)
+      indices = self.feature_set.get_virtual_to_real_features_gather_indices()
+      for i_real, is_virtual in enumerate(indices):
+        weight[i_real, :] = sum(weight[i_virtual, :] for i_virtual in is_virtual)
+      for a, b in self.feature_set.get_virtual_feature_ranges():
+        weight[a:b, :] = 0.0
+        mask[a:b, :] = 0.0
+      print('Disable main FT factorizer')
+      return mask
+
   def forward(self, us, them, white_indices, white_values, black_indices, black_values, psqt_indices, layer_stack_indices):
     w, b = self.input(white_indices, white_values, black_indices, black_values)
     wpsqt, bpsqt = self.input_psqt(white_indices, white_values, black_indices, black_values)
@@ -254,8 +267,17 @@ class NNUE(pl.LightningModule):
   def configure_optimizers(self):
     # Train with a lower LR on the output layer
     LR = 8.75e-4
+
+    steps_per_epoch = 100000000
+    batch_size = 16384
+    prune_ft_min_step = 100
+    prune_ft_max_step = 1000
+    prune_ft_freeze_fact = lambda: self.disable_main_ft_factorizer()
+    prune_ft_spec = ranger.WeightPruningSpec(block_width=32, target_nnz_blocks_per_stripe=8, min_step=prune_ft_min_step, max_step=prune_ft_max_step, stripe_dim=1, on_first_pruning_step=prune_ft_freeze_fact)
+
     train_params = [
-      {'params' : [self.input.weight, self.input.bias], 'lr' : LR },
+      {'params' : [self.input.weight], 'lr' : LR, 'weight_pruning' : prune_ft_spec },
+      {'params' : [self.input.bias], 'lr' : LR },
       {'params' : [self.input_psqt.weight], 'lr' : LR },
       # Needs to be updated before because the l1 layer depends on it
       {'params' : [self.layer_stacks.l1_fact.weight], 'lr' : LR },
