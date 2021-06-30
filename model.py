@@ -116,7 +116,8 @@ class NNUE(pl.LightningModule):
     super(NNUE, self).__init__()
     self.num_psqt_buckets = feature_set.num_psqt_buckets
     self.num_ls_buckets = feature_set.num_ls_buckets
-    self.input = DoubleFeatureTransformerSlice(feature_set.num_features, L1 + self.num_psqt_buckets)
+    self.input = DoubleFeatureTransformerSlice(feature_set.num_features, L1)
+    self.input_psqt = DoubleFeatureTransformerSlice(feature_set.num_features, self.num_psqt_buckets)
     self.feature_set = feature_set
     self.layer_stacks = LayerStacks(self.num_ls_buckets)
     self.lambda_ = lambda_
@@ -129,10 +130,13 @@ class NNUE(pl.LightningModule):
   '''
   def _zero_virtual_feature_weights(self):
     weights = self.input.weight
+    weights_psqt = self.input_psqt.weight
     with torch.no_grad():
       for a, b in self.feature_set.get_virtual_feature_ranges():
         weights[a:b, :] = 0.0
+        weights_psqt[a:b, :] = 0.0
     self.input.weight = nn.Parameter(weights)
+    self.input_psqt.weight = nn.Parameter(weights_psqt)
 
   '''
   Pytorch initializes biases around 0, but we want them
@@ -141,24 +145,25 @@ class NNUE(pl.LightningModule):
   '''
   def _init_layers(self):
     input_bias = self.input.bias
+    input_psqt_bias = self.input_psqt.bias
     with torch.no_grad():
-      for i in range(8):
-        input_bias[L1 + i] = 0.0
+      input_psqt_bias[:] = 0.0
     self.input.bias = nn.Parameter(input_bias)
+    self.input_psqt.bias = nn.Parameter(input_psqt_bias)
 
     self._zero_virtual_feature_weights()
     self._init_psqt()
 
   def _init_psqt(self):
-    input_weights = self.input.weight
+    input_psqt_weights = self.input_psqt.weight
     # 1.0 / kPonanzaConstant
     scale = 1 / 600
     with torch.no_grad():
       initial_values = self.feature_set.get_initial_psqt_features()
       assert len(initial_values) == self.feature_set.num_features
       for i in range(8):
-        input_weights[:, L1 + i] = torch.FloatTensor(initial_values) * scale
-    self.input.weight = nn.Parameter(input_weights)
+        input_psqt_weights[:, i] = torch.FloatTensor(initial_values) * scale
+    self.input_psqt.weight = nn.Parameter(input_psqt_weights)
 
   '''
   This method attempts to convert the model from using the self.feature_set
@@ -200,9 +205,8 @@ class NNUE(pl.LightningModule):
       raise Exception('Cannot change feature set from {} to {}.'.format(self.feature_set.name, new_feature_set.name))
 
   def forward(self, us, them, white_indices, white_values, black_indices, black_values, psqt_indices, layer_stack_indices):
-    wp, bp = self.input(white_indices, white_values, black_indices, black_values)
-    w, wpsqt = torch.split(wp, L1, dim=1)
-    b, bpsqt = torch.split(bp, L1, dim=1)
+    w, b = self.input(white_indices, white_values, black_indices, black_values)
+    wpsqt, bpsqt = self.input_psqt(white_indices, white_values, black_indices, black_values)
     l0_ = (us * torch.cat([w, b], dim=1)) + (them * torch.cat([b, w], dim=1))
     # clamp here is used as a clipped relu to (0.0, 1.0)
     l0_ = torch.clamp(l0_, 0.0, 1.0)
@@ -251,7 +255,8 @@ class NNUE(pl.LightningModule):
     # Train with a lower LR on the output layer
     LR = 8.75e-4
     train_params = [
-      {'params' : get_parameters([self.input]), 'lr' : LR },
+      {'params' : [self.input.weight, self.input.bias], 'lr' : LR },
+      {'params' : [self.input_psqt.weight], 'lr' : LR },
       # Needs to be updated before because the l1 layer depends on it
       {'params' : [self.layer_stacks.l1_fact.weight], 'lr' : LR },
       {'params' : [self.layer_stacks.l1.weight], 'lr' : LR, 'min_weight' : -127/64, 'max_weight' : 127/64, 'virtual_params' : self.layer_stacks.l1_fact.weight },
