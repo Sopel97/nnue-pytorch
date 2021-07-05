@@ -260,12 +260,20 @@ class NNUE(pl.LightningModule):
     # Train with a lower LR on the output layer
     LR = 8.75e-4
 
-    steps_per_epoch = 100000000
+    positions_per_epoch = 100000000
     batch_size = 16384
-    prune_l1_min_step = 100
-    prune_l1_max_step = 1000
+    steps_per_epoch = positions_per_epoch // batch_size
+    prune_l1_min_step = steps_per_epoch * 40
+    prune_l1_max_step = steps_per_epoch * 80
     prune_l1_freeze_fact = lambda: self.layer_stacks.freeze_l1_fact()
-    prune_l1_spec = ranger.WeightPruningSpec(substripes=self.num_ls_buckets, block_width=16, target_nnz_blocks_per_stripe=4*self.num_ls_buckets, min_step=prune_l1_min_step, max_step=prune_l1_max_step, stripe_dim=0, on_first_pruning_step=prune_l1_freeze_fact)
+    prune_l1_spec = ranger.WeightPruningSpec(
+      substripes=self.num_ls_buckets,
+      block_width=16,
+      target_nnz_blocks_per_stripe=4*self.num_ls_buckets,
+      min_step=prune_l1_min_step,
+      max_step=prune_l1_max_step,
+      stripe_dim=0,
+      on_first_pruning_step=prune_l1_freeze_fact)
 
     train_params = [
       {'params' : get_parameters([self.input]), 'lr' : LR },
