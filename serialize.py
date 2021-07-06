@@ -37,7 +37,7 @@ class NNUEWriter():
     fc_hash = self.fc_hash(model)
     self.write_header(model, fc_hash)
     self.int32(model.feature_set.hash ^ (M.L1*2)) # Feature transformer hash
-    self.write_feature_transformer(model)
+    self.write_feature_transformer_block_sparse(model)
     for l1, l2, output in model.layer_stacks.get_coalesced_layer_stacks():
       self.int32(fc_hash) # FC layers hash
       self.write_fc_layer(l1)
@@ -98,6 +98,35 @@ class NNUEWriter():
     ascii_hist('ft weight:', weight.numpy())
     # weights stored as [41024][256]
     self.buf.extend(weight.flatten().numpy().tobytes())
+    self.buf.extend(weight_psqt.flatten().numpy().tobytes())
+
+  def get_nnz_indices_blocks(self, weight, wp):
+    all_blocks = weight.reshape((-1, wp.block_width))
+    mask_blocks = wp.mask.reshape((-1, wp.block_width))
+    is_mask_block_nnz = torch.count_nonzero(mask_blocks, dim=1) > 0
+    mask_nnz_indices = torch.nonzero(is_mask_block_nnz).flatten()
+    weight_nnz_blocks = all_blocks[mask_nnz_indices]
+    return mask_nnz_indices, weight_nnz_blocks
+
+  def write_feature_transformer_block_sparse(self, model):
+    # int16 bias = round(x * 127)
+    # int16 weight = round(x * 127)
+    layer = model.input
+    layer_psqt = model.input_psqt
+    bias = layer.bias.data[:M.L1]
+    bias = bias.mul(127).round().to(torch.int16)
+    ascii_hist('ft bias:', bias.numpy())
+    self.buf.extend(bias.flatten().numpy().tobytes())
+
+    weight = self.coalesce_ft_weights(model, layer)
+    weight_psqt = self.coalesce_ft_weights(model, layer_psqt)
+    weight = weight.mul(127).round().to(torch.int16)
+    weight_psqt = weight_psqt.mul(9600).round().to(torch.int32) # kPonanzaConstant * FV_SCALE = 9600
+    ascii_hist('ft weight:', weight.numpy())
+    # weights stored as [41024][256]
+    nnz_indices, nnz_blocks = self.get_nnz_indices_blocks(weight, model.prune_ft_spec)
+    self.buf.extend(nnz_indices.numpy().tobytes())
+    self.buf.extend(nnz_blocks.flatten().numpy().tobytes())
     self.buf.extend(weight_psqt.flatten().numpy().tobytes())
 
   def write_fc_layer(self, layer, is_output=False):

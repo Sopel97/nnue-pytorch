@@ -121,6 +121,7 @@ class NNUE(pl.LightningModule):
     self.feature_set = feature_set
     self.layer_stacks = LayerStacks(self.num_ls_buckets)
     self.lambda_ = lambda_
+    self.prune_ft_spec = None
 
     self._init_layers()
 
@@ -274,7 +275,7 @@ class NNUE(pl.LightningModule):
     prune_ft_min_step = steps_per_epoch * 20
     prune_ft_max_step = steps_per_epoch * 80
     prune_ft_freeze_fact = lambda: self.disable_main_ft_factorizer()
-    prune_ft_spec = ranger.WeightPruningSpec(
+    self.prune_ft_spec = ranger.WeightPruningSpec(
       block_width=32,
       target_nnz_blocks_per_stripe=8,
       min_step=prune_ft_min_step,
@@ -283,7 +284,7 @@ class NNUE(pl.LightningModule):
       on_first_pruning_step=prune_ft_freeze_fact)
 
     train_params = [
-      {'params' : [self.input.weight], 'lr' : LR, 'weight_pruning' : prune_ft_spec },
+      {'params' : [self.input.weight], 'lr' : LR, 'weight_pruning' : self.prune_ft_spec },
       {'params' : [self.input.bias], 'lr' : LR },
       {'params' : [self.input_psqt.weight], 'lr' : LR },
       # Needs to be updated before because the l1 layer depends on it
