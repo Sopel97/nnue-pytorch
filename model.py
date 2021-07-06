@@ -122,6 +122,7 @@ class NNUE(pl.LightningModule):
     self.layer_stacks = LayerStacks(self.num_ls_buckets)
     self.lambda_ = lambda_
     self.prune_ft_spec = None
+    self.num_steps = 0
 
     self._init_layers()
 
@@ -257,6 +258,13 @@ class NNUE(pl.LightningModule):
     # loss = F.mse_loss(output, score)
 
   def training_step(self, batch, batch_idx):
+    self.num_steps += 1
+    wp = self.prune_ft_spec
+    if self.num_steps == wp.min_step:
+      additional_mask = self.disable_main_ft_factorizer()
+      if additional_mask is not None:
+          wp.mask.mul_(additional_mask)
+
     return self.step_(batch, batch_idx, 'train_loss')
 
   def validation_step(self, batch, batch_idx):
@@ -274,14 +282,12 @@ class NNUE(pl.LightningModule):
     steps_per_epoch = pos_per_epoch // batch_size
     prune_ft_min_step = steps_per_epoch * 20
     prune_ft_max_step = steps_per_epoch * 80
-    prune_ft_freeze_fact = lambda: self.disable_main_ft_factorizer()
     self.prune_ft_spec = ranger.WeightPruningSpec(
       block_width=32,
       target_nnz_blocks_per_stripe=8,
       min_step=prune_ft_min_step,
       max_step=prune_ft_max_step,
-      stripe_dim=1,
-      on_first_pruning_step=prune_ft_freeze_fact)
+      stripe_dim=1)
 
     train_params = [
       {'params' : [self.input.weight], 'lr' : LR, 'weight_pruning' : self.prune_ft_spec },
