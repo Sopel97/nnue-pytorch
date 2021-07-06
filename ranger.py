@@ -178,6 +178,14 @@ class Ranger(Optimizer):
         self.update_mask(weight, wp, step)
         weight.mul_(wp.mask)
 
+        positions_per_epoch = 100000000
+        batch_size = 16384
+        steps_per_epoch = positions_per_epoch // batch_size
+        if step % steps_per_epoch == 0:
+            all_ = wp.mask.numel()
+            nnz = torch.count_nonzero(wp.mask)
+            print('NNZ: {}; Density: {}'.format(nnz, nnz/all_))
+
     def step(self, closure=None):
         loss = None
         if closure is not None:
