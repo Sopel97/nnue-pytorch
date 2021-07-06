@@ -62,11 +62,11 @@ class WeightPruningSpec:
         self.blocks_per_substripe = None
 
     def __str__(self):
-        return 'min_step={}; max_step={}; block_width={}; target_nnz_blocks_per_stripe={}; '
-            + 'stripe_dim={}; substripes={}; current_stripe={}; next_step_at={}; '
-            + 'target_zero_blocks_per_stripe={}; num_zero_blocks={}; '
-            + 'num_stripes={}; blocks_per_stripe={}; blocks_per_substripe={} '.format(
-                self.min_step, self.max_step, self.target_nnz_blocks_per_stripe,
+        return ('min_step={}; max_step={}; block_width={}; target_nnz_blocks_per_stripe={}; ' \
+            + 'stripe_dim={}; substripes={}; current_stripe={}; next_step_at={}; ' \
+            + 'target_zero_blocks_per_stripe={}; num_zero_blocks={}; ' \
+            + 'num_stripes={}; blocks_per_stripe={}; blocks_per_substripe={} ').format(
+                self.min_step, self.max_step, self.block_width, self.target_nnz_blocks_per_stripe,
                 self.stripe_dim, self.substripes, self.current_stripe, self.next_step_at,
                 self.target_zero_blocks_per_stripe, self.num_zero_blocks,
                 self.num_stripes, self.blocks_per_stripe, self.blocks_per_substripe)
@@ -133,16 +133,17 @@ class Ranger(Optimizer):
 
     # IMPORTANT: MUST BE CALLED ONE BY ONE BLOCK! THAT IS NUM_ZERO_BLOCKS MUST NOT SKIP ANY VALuE.
     def update_mask_in_place(self, wp, weight, stripe):
-        num_zero_blocks = wp.zero_blocks_by_stripe[stripe]
+        num_zero_blocks_in_stripe = wp.zero_blocks_by_stripe[stripe]
         block_width = wp.block_width
         blocks_per_substripe = wp.blocks_per_substripe
         stripe_dim = wp.stripe_dim
         mask = wp.mask
 
-        if num_zero_blocks == 0:
+        if num_zero_blocks_in_stripe == 0:
             return
 
-        substripe = num_zero_blocks % wp.substripes
+        substripe = num_zero_blocks_in_stripe % wp.substripes
+        num_zero_blocks = (num_zero_blocks_in_stripe + wp.substripes - 1) // wp.substripes
 
         if stripe_dim == 1:
             blocks = weight[stripe,:].view(-1, block_width)
@@ -150,16 +151,20 @@ class Ranger(Optimizer):
             blocks_l1_norms.sort(key=lambda x:x[1])
             for block_idx, norm in blocks_l1_norms[:num_zero_blocks]:
                 mask[stripe, block_idx*block_width:block_idx*block_width+block_width].fill_(0.0)
+                weight[stripe, block_idx*block_width:block_idx*block_width+block_width].fill_(0.0)
         elif stripe_dim == 0:
             blocks = weight[:,stripe].view(-1, block_width)
             blocks_l1_norms = [(i, norm.item()) for i, norm in enumerate(blocks.abs().sum(dim=1)) if i // blocks_per_substripe == substripe]
             blocks_l1_norms.sort(key=lambda x:x[1])
             for block_idx, norm in blocks_l1_norms[:num_zero_blocks]:
                 mask[block_idx*block_width:block_idx*block_width+block_width, stripe].fill_(0.0)
+                weight[block_idx*block_width:block_idx*block_width+block_width, stripe].fill_(0.0)
         else:
             raise Exception('Invalid stripe_dim {}'.format(stripe_dim))
 
     def update_mask(self, weight, wp, step):
+        if step >= wp.next_step_at:
+            weight.mul_(wp.mask) # make sure the mask is applied so the weights that should be zero are zero
         while step >= wp.next_step_at:
             if wp.zero_blocks_by_stripe[wp.current_stripe] >= wp.target_zero_blocks_per_stripe:
                 break
@@ -184,7 +189,7 @@ class Ranger(Optimizer):
         positions_per_epoch = 100000000
         batch_size = 16384
         steps_per_epoch = positions_per_epoch // batch_size
-        if step % steps_per_epoch == 0:
+        if step % (steps_per_epoch // 10) == 0:
             print(str(wp))
             print('mask nnz: {}; weight nnz: {}'.format(torch.count_nonzero(wp.mask), torch.count_nonzero(weight)))
 
