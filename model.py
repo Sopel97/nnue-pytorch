@@ -8,8 +8,8 @@ import copy
 from feature_transformer import DoubleFeatureTransformerSlice
 
 # 3 layer fully connected network
-L1 = 512
-L2 = 16
+L1 = 2048
+L2 = 128
 L3 = 32
 
 def get_parameters(layers):
@@ -268,12 +268,19 @@ class NNUE(pl.LightningModule):
     # Train with a lower LR on the output layer
     LR = 8.75e-4
 
-    steps_per_epoch = 100000000
+    pos_per_epoch = 100000000
     batch_size = 16384
-    prune_ft_min_step = 100
-    prune_ft_max_step = 1000
+    steps_per_epoch = pos_per_epoch // batch_size
+    prune_ft_min_step = steps_per_epoch * 20
+    prune_ft_max_step = steps_per_epoch * 80
     prune_ft_freeze_fact = lambda: self.disable_main_ft_factorizer()
-    prune_ft_spec = ranger.WeightPruningSpec(block_width=32, target_nnz_blocks_per_stripe=8, min_step=prune_ft_min_step, max_step=prune_ft_max_step, stripe_dim=1, on_first_pruning_step=prune_ft_freeze_fact)
+    prune_ft_spec = ranger.WeightPruningSpec(
+      block_width=32,
+      target_nnz_blocks_per_stripe=8,
+      min_step=prune_ft_min_step,
+      max_step=prune_ft_max_step,
+      stripe_dim=1,
+      on_first_pruning_step=prune_ft_freeze_fact)
 
     train_params = [
       {'params' : [self.input.weight], 'lr' : LR, 'weight_pruning' : prune_ft_spec },
