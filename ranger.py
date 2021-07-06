@@ -43,13 +43,12 @@ def centralized_gradient(x, use_gc=True, gc_conv_only=False):
 class WeightPruningSpec:
     def __init__(self, min_step=100000000//16384*10, max_step=100000000//16384*60,
                  block_width=32, target_nnz_blocks_per_stripe=1, stripe_dim=1,
-                 on_first_pruning_step=None, substripes=1):
+                 substripes=1):
         self.min_step = min_step
         self.max_step = max_step
         self.block_width = block_width
         self.target_nnz_blocks_per_stripe = target_nnz_blocks_per_stripe
         self.stripe_dim = stripe_dim
-        self.on_first_pruning_step = on_first_pruning_step
         self.substripes = substripes
 
         self.current_stripe = None
@@ -152,12 +151,6 @@ class Ranger(Optimizer):
 
     def update_mask(self, weight, wp, step):
         while step >= wp.next_step_at:
-            if wp.on_first_pruning_step is not None:
-                additional_mask = wp.on_first_pruning_step()
-                if additional_mask is not None:
-                    wp.mask.mul_(additional_mask)
-                wp.on_first_pruning_step = None
-
             if wp.zero_blocks_by_stripe[wp.current_stripe] >= wp.target_zero_blocks_per_stripe:
                 break
 

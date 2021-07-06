@@ -129,6 +129,8 @@ class NNUE(pl.LightningModule):
     self.feature_set = feature_set
     self.layer_stacks = LayerStacks(self.num_ls_buckets)
     self.lambda_ = lambda_
+    self.prune_l1_spec = None
+    self.num_steps = 0
 
     self._init_layers()
 
@@ -248,6 +250,13 @@ class NNUE(pl.LightningModule):
     # loss = F.mse_loss(output, score)
 
   def training_step(self, batch, batch_idx):
+    self.num_steps += 1
+    wp = self.prune_l1_spec
+    if self.num_steps == wp.min_step:
+      additional_mask = self.layer_stacks.freeze_l1_fact()
+      if additional_mask is not None:
+          wp.mask.mul_(additional_mask)
+
     return self.step_(batch, batch_idx, 'train_loss')
 
   def validation_step(self, batch, batch_idx):
@@ -265,21 +274,19 @@ class NNUE(pl.LightningModule):
     steps_per_epoch = positions_per_epoch // batch_size
     prune_l1_min_step = steps_per_epoch * 40
     prune_l1_max_step = steps_per_epoch * 80
-    prune_l1_freeze_fact = lambda: self.layer_stacks.freeze_l1_fact()
-    prune_l1_spec = ranger.WeightPruningSpec(
+    self.prune_l1_spec = ranger.WeightPruningSpec(
       substripes=self.num_ls_buckets,
       block_width=16,
       target_nnz_blocks_per_stripe=4*self.num_ls_buckets,
       min_step=prune_l1_min_step,
       max_step=prune_l1_max_step,
-      stripe_dim=0,
-      on_first_pruning_step=prune_l1_freeze_fact)
+      stripe_dim=0)
 
     train_params = [
       {'params' : get_parameters([self.input]), 'lr' : LR },
       # Needs to be updated before because the l1 layer depends on it
       {'params' : [self.layer_stacks.l1_fact.weight], 'lr' : LR },
-      {'params' : [self.layer_stacks.l1.weight], 'lr' : LR, 'min_weight' : -127/64, 'max_weight' : 127/64, 'virtual_params' : self.layer_stacks.l1_fact.weight, 'weight_pruning' : prune_l1_spec },
+      {'params' : [self.layer_stacks.l1.weight], 'lr' : LR, 'min_weight' : -127/64, 'max_weight' : 127/64, 'virtual_params' : self.layer_stacks.l1_fact.weight, 'weight_pruning' : self.prune_l1_spec },
       {'params' : [self.layer_stacks.l1.bias], 'lr' : LR },
       {'params' : [self.layer_stacks.l2.weight], 'lr' : LR, 'min_weight' : -127/64, 'max_weight' : 127/64 },
       {'params' : [self.layer_stacks.l2.bias], 'lr' : LR },
