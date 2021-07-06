@@ -61,6 +61,16 @@ class WeightPruningSpec:
         self.blocks_per_stripe = None
         self.blocks_per_substripe = None
 
+    def __str__(self):
+        return 'min_step={}; max_step={}; block_width={}; target_nnz_blocks_per_stripe={}; '
+            + 'stripe_dim={}; substripes={}; current_stripe={}; next_step_at={}; '
+            + 'target_zero_blocks_per_stripe={}; num_zero_blocks={}; '
+            + 'num_stripes={}; blocks_per_stripe={}; blocks_per_substripe={} '.format(
+                self.min_step, self.max_step, self.target_nnz_blocks_per_stripe,
+                self.stripe_dim, self.substripes, self.current_stripe, self.next_step_at,
+                self.target_zero_blocks_per_stripe, self.num_zero_blocks,
+                self.num_stripes, self.blocks_per_stripe, self.blocks_per_substripe)
+
 class Ranger(Optimizer):
 
     def __init__(self, params, lr=1e-3,                       # lr
@@ -175,9 +185,8 @@ class Ranger(Optimizer):
         batch_size = 16384
         steps_per_epoch = positions_per_epoch // batch_size
         if step % steps_per_epoch == 0:
-            all_ = wp.mask.numel()
-            nnz = torch.count_nonzero(wp.mask)
-            print('NNZ: {}; Density: {}'.format(nnz, nnz/all_))
+            print(str(wp))
+            print('mask nnz: {}; weight nnz: {}'.format(torch.count_nonzero(wp.mask), torch.count_nonzero(weight)))
 
     def step(self, closure=None):
         loss = None
@@ -304,9 +313,6 @@ class Ranger(Optimizer):
                         else:
                             raise Exception('Not supported.')
 
-                if 'weight_pruning' in state and len(p_data_fp32.shape) == 2:
-                    self.do_weight_pruning_step(p_data_fp32, state['weight_pruning'], state['step'])
-
                 p.data.copy_(p_data_fp32)
 
                 # integrated look ahead...
@@ -318,5 +324,8 @@ class Ranger(Optimizer):
                     slow_p.add_(p.data - slow_p, alpha=self.alpha)
                     # copy interpolated weights to RAdam param tensor
                     p.data.copy_(slow_p)
+
+                if 'weight_pruning' in state and len(p.data.shape) == 2:
+                    self.do_weight_pruning_step(p.data, state['weight_pruning'], state['step'])
 
         return loss
