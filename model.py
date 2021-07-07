@@ -9,8 +9,8 @@ from feature_transformer import DoubleFeatureTransformerSlice
 
 # 3 layer fully connected network
 L1 = 2048
-L2 = 128
-L3 = 32
+L2 = 64
+L3 = 64
 
 def get_parameters(layers):
   return [p for layer in layers for p in layer.parameters()]

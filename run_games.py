@@ -20,6 +20,9 @@ def convert_ckpt(root_dir):
     # lets move the .nnue files a bit up in the tree, and get rid of the = sign.
     # run96/run0/default/version_0/checkpoints/epoch=3.ckpt -> run96/run0/nn-epoch3.nnue
     for ckpt in ckpts:
+        epoch = int(nnue_file_name.split('=')[1].split('.')[0])
+        if epoch < 110:
+            continue
         nnue_file_name = re.sub("default/version_[0-9]+/checkpoints/", "", ckpt)
         nnue_file_name = re.sub(r"epoch\=([0-9]+).*\.ckpt", r"nn-epoch\1.nnue", nnue_file_name)
         if not os.path.exists(nnue_file_name):
