@@ -263,7 +263,7 @@ class NNUE(pl.LightningModule):
     if self.num_steps == wp.min_step:
       additional_mask = self.disable_main_ft_factorizer()
       if additional_mask is not None:
-          wp.mask.mul_(additional_mask)
+        wp.mask.mul_(additional_mask)
 
     return self.step_(batch, batch_idx, 'train_loss')
 
@@ -272,6 +272,12 @@ class NNUE(pl.LightningModule):
 
   def test_step(self, batch, batch_idx):
     self.step_(batch, batch_idx, 'test_loss')
+
+  def on_save_checkpoint(self, checkpoint):
+    checkpoint['prune_ft_spec'] = self.prune_ft_spec
+
+  def on_load_checkpoint(self, checkpoint):
+    self.prune_ft_spec = checkpoint['prune_ft_spec']
 
   def configure_optimizers(self):
     # Train with a lower LR on the output layer

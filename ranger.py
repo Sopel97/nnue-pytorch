@@ -227,7 +227,9 @@ class Ranger(Optimizer):
                     state['slow_buffer'] = torch.empty_like(p.data)
                     state['slow_buffer'].copy_(p.data)
                     if len(p_data_fp32.shape) == 2 and group['weight_pruning'] is not None:
-                        state['weight_pruning'] = copy.deepcopy(group['weight_pruning'])
+                        if len(group['params']) != 1:
+                            raise Exception('Weight pruning can only be used with one param in the group')
+                        state['weight_pruning'] = group['weight_pruning']
                         wp = state['weight_pruning']
                         wp.current_stripe = 0
                         wp.next_step_at = wp.min_step

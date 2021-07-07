@@ -106,7 +106,7 @@ class NNUEWriter():
     is_mask_block_nnz = torch.count_nonzero(mask_blocks, dim=1) > 0
     mask_nnz_indices = torch.nonzero(is_mask_block_nnz).flatten()
     weight_nnz_blocks = all_blocks[mask_nnz_indices]
-    return mask_nnz_indices, weight_nnz_blocks
+    return mask_nnz_indices.to(torch.int32), weight_nnz_blocks
 
   def write_feature_transformer_block_sparse(self, model):
     # int16 bias = round(x * 127)
